@@ -3,6 +3,8 @@ from abc import ABC, abstractmethod
 import numpy as np
 
 from models.dynamics_model import DynamicsModel
+from utils.control.action_to_input import action_to_input
+from utils.control.quadratic_cost import quadratic_cost
 
 
 class Planner(ABC):
@@ -49,3 +51,72 @@ class Planner(ABC):
             The planned actions, an integer array of shape (horizon,) with values in
             [0, action_space_size). The first entry is the action to take now.
         """
+
+
+class RandomShootingPlanner(Planner):
+    """A planner that samples random action sequences and keeps the cheapest.
+
+    Each plan call draws `num_samples` uniformly random action sequences of length
+    `horizon`, rolls them all through the model in one batch, adds up the cost
+    (s - s*)^2 + u^2 of each step, and returns the sequence with the lowest total.
+
+    Attributes:
+        num_samples: the number of random action sequences tried per plan.
+        seed: the seed of the planner's random number generator.
+        random_generator: the seeded generator the sequences are drawn from.
+    """
+
+    num_samples: int
+    seed: int
+    random_generator: np.random.Generator
+
+    def __init__(
+        self,
+        horizon: int,
+        action_space_size: int,
+        target_state: np.ndarray,
+        *,
+        num_samples: int = 1000,
+        seed: int = 0,
+    ) -> None:
+        """Store the planning settings and create a seeded random generator.
+
+        Args:
+            horizon: the number of steps in a planned action sequence.
+            action_space_size: the number of discrete actions available.
+            target_state: the state s* the cost measures distance from, shape (state_dim,).
+            num_samples: the number of random action sequences tried per plan.
+            seed: the seed for the planner's random number generator.
+
+        Returns:
+            None.
+        """
+        super().__init__(horizon, action_space_size, target_state)
+        self.num_samples = num_samples
+        self.seed = seed
+        self.random_generator = np.random.default_rng(seed)
+
+    def plan(self, model: DynamicsModel, state: np.ndarray) -> np.ndarray:
+        """Choose the cheapest of `num_samples` random action sequences.
+
+        Differs from the base class by implementing the search as random shooting.
+        Each call advances the planner's random generator.
+
+        Args:
+            model: a fitted dynamics model used to predict future states.
+            state: the current state, shape (state_dim,).
+
+        Returns:
+            The lowest-cost sampled actions, an integer array of shape (horizon,)
+            with values in [0, action_space_size).
+        """
+        action_sequences = self.random_generator.integers(
+            0, self.action_space_size, size=(self.num_samples, self.horizon)
+        )
+        predicted_states = np.tile(state, (self.num_samples, 1))
+        total_costs = np.zeros(self.num_samples)
+        for step_index in range(self.horizon):
+            control_inputs = action_to_input(action_sequences[:, step_index])
+            predicted_states = model.predict(predicted_states, control_inputs)
+            total_costs += quadratic_cost(predicted_states, control_inputs, self.target_state)
+        return action_sequences[int(np.argmin(total_costs))].copy()
