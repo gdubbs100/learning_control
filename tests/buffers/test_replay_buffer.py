@@ -89,3 +89,64 @@ def test_family_class_follows_contract(cls: type) -> None:
                     f"added __init__ parameter {name} must be keyword-only"
                 )
         assert "super().__init__(" in inspect.getsource(cls.__init__)
+
+
+# ListReplayBuffer
+
+import numpy as np
+
+from buffers.replay_buffer import ListReplayBuffer
+
+
+def add_two_example_transitions(buffer: ReplayBuffer) -> None:
+    """Add two fixed transitions with different values in every field."""
+    buffer.add(np.array([1.0, 2.0, 3.0, 4.0]), 0, -1.5, np.array([1.5, 2.5, 3.5, 4.5]), False)
+    buffer.add(np.array([5.0, 6.0, 7.0, 8.0]), 1, -2.5, np.array([5.5, 6.5, 7.5, 8.5]), True)
+
+
+def test_list_replay_buffer_starts_empty() -> None:
+    assert ListReplayBuffer().size() == 0
+
+
+def test_list_replay_buffer_size_counts_added_transitions() -> None:
+    buffer = ListReplayBuffer()
+    add_two_example_transitions(buffer)
+    assert buffer.size() == 2
+
+
+def test_list_replay_buffer_as_arrays_has_expected_keys_and_shapes() -> None:
+    buffer = ListReplayBuffer()
+    add_two_example_transitions(buffer)
+    arrays = buffer.as_arrays()
+    assert set(arrays) == {"observations", "actions", "rewards", "next_observations", "terminated"}
+    assert arrays["observations"].shape == (2, 4)
+    assert arrays["actions"].shape == (2,)
+    assert arrays["rewards"].shape == (2,)
+    assert arrays["next_observations"].shape == (2, 4)
+    assert arrays["terminated"].shape == (2,)
+    assert arrays["terminated"].dtype == np.bool_
+
+
+def test_list_replay_buffer_as_arrays_preserves_values_and_order() -> None:
+    buffer = ListReplayBuffer()
+    add_two_example_transitions(buffer)
+    arrays = buffer.as_arrays()
+    np.testing.assert_array_equal(arrays["observations"], [[1.0, 2.0, 3.0, 4.0], [5.0, 6.0, 7.0, 8.0]])
+    np.testing.assert_array_equal(arrays["actions"], [0, 1])
+    np.testing.assert_array_equal(arrays["rewards"], [-1.5, -2.5])
+    np.testing.assert_array_equal(
+        arrays["next_observations"], [[1.5, 2.5, 3.5, 4.5], [5.5, 6.5, 7.5, 8.5]]
+    )
+    np.testing.assert_array_equal(arrays["terminated"], [False, True])
+
+
+def test_list_replay_buffer_stores_copies_of_added_arrays() -> None:
+    buffer = ListReplayBuffer()
+    observation = np.array([1.0, 2.0, 3.0, 4.0])
+    next_observation = np.array([1.5, 2.5, 3.5, 4.5])
+    buffer.add(observation, 0, -1.0, next_observation, False)
+    observation[:] = 99.0
+    next_observation[:] = 99.0
+    arrays = buffer.as_arrays()
+    np.testing.assert_array_equal(arrays["observations"], [[1.0, 2.0, 3.0, 4.0]])
+    np.testing.assert_array_equal(arrays["next_observations"], [[1.5, 2.5, 3.5, 4.5]])
