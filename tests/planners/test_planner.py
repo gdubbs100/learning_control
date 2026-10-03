@@ -90,3 +90,76 @@ def test_family_class_follows_contract(cls: type) -> None:
                     f"added __init__ parameter {name} must be keyword-only"
                 )
         assert "super().__init__(" in inspect.getsource(cls.__init__)
+
+
+# RandomShootingPlanner
+
+from models.dynamics_model import DynamicsModel
+from planners.planner import RandomShootingPlanner
+
+
+class OneDimensionalModel(DynamicsModel):
+    """A fixed 1-D model s' = s + 0.5 u, used so the best action sequences are known."""
+
+    def __init__(self) -> None:
+        super().__init__(state_dim=1)
+
+    def fit(self, states: np.ndarray, inputs: np.ndarray, next_states: np.ndarray) -> dict[str, float]:
+        return {"train_mse": 0.0}
+
+    def predict(self, states: np.ndarray, inputs: np.ndarray) -> np.ndarray:
+        return states + 0.5 * inputs[..., None]
+
+    def is_fitted(self) -> bool:
+        return True
+
+
+def make_planner(horizon: int = 3, target: float = 0.0, seed: int = 0) -> RandomShootingPlanner:
+    """A RandomShootingPlanner for the 1-D model with 200 samples."""
+    return RandomShootingPlanner(
+        horizon=horizon,
+        action_space_size=2,
+        target_state=np.array([target]),
+        num_samples=200,
+        seed=seed,
+    )
+
+
+def test_random_shooting_pushes_down_from_positive_state() -> None:
+    plan = make_planner().plan(OneDimensionalModel(), np.array([3.0]))
+    np.testing.assert_array_equal(plan, [0, 0, 0])
+
+
+def test_random_shooting_pushes_up_from_negative_state() -> None:
+    plan = make_planner().plan(OneDimensionalModel(), np.array([-3.0]))
+    np.testing.assert_array_equal(plan, [1, 1, 1])
+
+
+def test_random_shooting_moves_towards_non_zero_target() -> None:
+    plan = make_planner(horizon=1, target=2.0).plan(OneDimensionalModel(), np.array([0.0]))
+    np.testing.assert_array_equal(plan, [1])
+
+
+def test_random_shooting_output_has_horizon_length_and_valid_actions() -> None:
+    plan = make_planner(horizon=5).plan(OneDimensionalModel(), np.array([0.7]))
+    assert plan.shape == (5,)
+    assert np.issubdtype(plan.dtype, np.integer)
+    assert set(plan.tolist()) <= {0, 1}
+
+
+def test_random_shooting_same_seed_gives_same_plan() -> None:
+    first_plan = make_planner(seed=3).plan(OneDimensionalModel(), np.array([0.7]))
+    second_plan = make_planner(seed=3).plan(OneDimensionalModel(), np.array([0.7]))
+    np.testing.assert_array_equal(first_plan, second_plan)
+
+
+def test_random_shooting_does_not_mutate_state_or_target() -> None:
+    state = np.array([0.7])
+    target = np.array([0.2])
+    planner = RandomShootingPlanner(
+        horizon=3, action_space_size=2, target_state=target, num_samples=50, seed=0
+    )
+    planner.plan(OneDimensionalModel(), state)
+    np.testing.assert_array_equal(state, [0.7])
+    np.testing.assert_array_equal(target, [0.2])
+    np.testing.assert_array_equal(planner.target_state, [0.2])
