@@ -89,3 +89,108 @@ def test_family_class_follows_contract(cls: type) -> None:
                     f"added __init__ parameter {name} must be keyword-only"
                 )
         assert "super().__init__(" in inspect.getsource(cls.__init__)
+
+
+# LinearDynamicsModel
+
+import numpy as np
+import torch
+
+from models.dynamics_model import LinearDynamicsModel
+
+TRUE_A = np.array([[1.0, 0.1], [0.0, 1.0]])
+TRUE_B = np.array([0.0, 0.1])
+TOLERANCE = 1e-8
+
+
+def exact_transitions(
+    a_matrix: np.ndarray, b_vector: np.ndarray
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Noise-free transitions s' = A s + B u on a 5x5 state grid with u in {-1, 1}."""
+    grid_values = np.linspace(-1.0, 1.0, 5)
+    states = np.array([[x, v] for x in grid_values for v in grid_values for _ in (0, 1)])
+    inputs = np.array([u for _ in grid_values for _ in grid_values for u in (-1.0, 1.0)])
+    next_states = states @ a_matrix.T + inputs[:, None] * b_vector
+    return states, inputs, next_states
+
+
+def fitted_linear_model() -> LinearDynamicsModel:
+    """A LinearDynamicsModel fitted on exact data from TRUE_A and TRUE_B."""
+    model = LinearDynamicsModel(state_dim=2)
+    model.fit(*exact_transitions(TRUE_A, TRUE_B))
+    return model
+
+
+def test_linear_model_is_not_fitted_before_fit() -> None:
+    assert LinearDynamicsModel(state_dim=2).is_fitted() is False
+
+
+def test_linear_model_is_fitted_after_fit() -> None:
+    assert fitted_linear_model().is_fitted() is True
+
+
+def test_linear_model_predict_before_fit_raises_runtime_error() -> None:
+    model = LinearDynamicsModel(state_dim=2)
+    with pytest.raises(RuntimeError):
+        model.predict(np.zeros((1, 2)), np.zeros(1))
+
+
+def test_linear_model_fit_recovers_a_and_b() -> None:
+    model = fitted_linear_model()
+    np.testing.assert_allclose(model.A.numpy(), TRUE_A, atol=TOLERANCE)
+    np.testing.assert_allclose(model.B.numpy(), TRUE_B, atol=TOLERANCE)
+
+
+def test_linear_model_a_and_b_are_float64_torch_tensors() -> None:
+    model = fitted_linear_model()
+    assert isinstance(model.A, torch.Tensor) and model.A.dtype == torch.float64
+    assert isinstance(model.B, torch.Tensor) and model.B.dtype == torch.float64
+    assert model.A.shape == (2, 2)
+    assert model.B.shape == (2,)
+
+
+def test_linear_model_fit_returns_train_mse_near_zero_on_exact_data() -> None:
+    model = LinearDynamicsModel(state_dim=2)
+    metrics = model.fit(*exact_transitions(TRUE_A, TRUE_B))
+    assert metrics["train_mse"] < 1e-12
+
+
+def test_linear_model_predict_matches_a_s_plus_b_u() -> None:
+    model = fitted_linear_model()
+    prediction = model.predict(np.array([[0.3, -0.2]]), np.array([1.0]))
+    np.testing.assert_allclose(prediction, np.array([[0.28, -0.1]]), atol=TOLERANCE)
+
+
+def test_linear_model_predict_handles_a_batch_and_returns_numpy() -> None:
+    model = fitted_linear_model()
+    prediction = model.predict(np.array([[0.3, -0.2], [1.0, 1.0]]), np.array([1.0, -1.0]))
+    assert isinstance(prediction, np.ndarray)
+    assert prediction.shape == (2, 2)
+    np.testing.assert_allclose(prediction, np.array([[0.28, -0.1], [1.1, 0.9]]), atol=TOLERANCE)
+
+
+def test_linear_model_refit_replaces_earlier_fit() -> None:
+    model = fitted_linear_model()
+    new_a = np.array([[0.5, 0.0], [0.0, 0.5]])
+    new_b = np.array([1.0, 0.0])
+    model.fit(*exact_transitions(new_a, new_b))
+    np.testing.assert_allclose(model.A.numpy(), new_a, atol=TOLERANCE)
+    np.testing.assert_allclose(model.B.numpy(), new_b, atol=TOLERANCE)
+
+
+def test_linear_model_fit_is_deterministic() -> None:
+    first_model = fitted_linear_model()
+    second_model = fitted_linear_model()
+    assert torch.equal(first_model.A, second_model.A)
+    assert torch.equal(first_model.B, second_model.B)
+
+
+def test_linear_model_fit_and_predict_do_not_mutate_inputs() -> None:
+    states, inputs, next_states = exact_transitions(TRUE_A, TRUE_B)
+    originals = (states.copy(), inputs.copy(), next_states.copy())
+    model = LinearDynamicsModel(state_dim=2)
+    model.fit(states, inputs, next_states)
+    model.predict(states, inputs)
+    np.testing.assert_array_equal(states, originals[0])
+    np.testing.assert_array_equal(inputs, originals[1])
+    np.testing.assert_array_equal(next_states, originals[2])
