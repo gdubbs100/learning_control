@@ -313,3 +313,173 @@ class ModelBasedMPCAgent(Agent):
             "model_one_step_mse_new_data". Empty before the first episode ends.
         """
         return dict(self._latest_diagnostics)
+
+
+class ReinforceAgent(Agent):
+    """A policy-gradient agent trained with REINFORCE, learning once at the end of each episode.
+
+    The policy is a small neural network mapping an observation to action logits.
+    Actions are sampled from the resulting categorical distribution. At the end of
+    an episode the discounted returns-to-go are computed and normalised to zero mean
+    and unit standard deviation, and one gradient step is taken on the loss
+    -mean(log_prob(action) * normalised_return).
+
+    Attributes:
+        policy: the network from observation to action logits.
+        optimizer: the Adam optimiser for the policy's parameters.
+        discount: the discount factor applied to future rewards.
+        seed: the seed for the network's initial weights and for action sampling.
+        random_generator: the seeded torch generator actions are sampled from.
+    """
+
+    policy: torch.nn.Sequential
+    optimizer: torch.optim.Optimizer
+    discount: float
+    seed: int
+    random_generator: torch.Generator
+
+    def __init__(
+        self,
+        action_space_size: int,
+        *,
+        observation_size: int = 4,
+        hidden_size: int = 64,
+        learning_rate: float = 1e-2,
+        discount: float = 0.99,
+        seed: int = 0,
+    ) -> None:
+        """Build the policy network, its optimiser and a seeded random generator.
+
+        Args:
+            action_space_size: the number of discrete actions available.
+            observation_size: the number of dimensions of the observation.
+            hidden_size: the number of units in the policy's hidden layer.
+            learning_rate: the Adam learning rate.
+            discount: the discount factor applied to future rewards.
+            seed: the seed for the initial weights and for action sampling.
+
+        Returns:
+            None.
+        """
+        super().__init__(action_space_size)
+        with torch.random.fork_rng():
+            torch.manual_seed(seed)
+            self.policy = torch.nn.Sequential(
+                torch.nn.Linear(observation_size, hidden_size),
+                torch.nn.Tanh(),
+                torch.nn.Linear(hidden_size, action_space_size),
+            )
+        self.optimizer = torch.optim.Adam(self.policy.parameters(), lr=learning_rate)
+        self.discount = discount
+        self.seed = seed
+        self.random_generator = torch.Generator()
+        self.random_generator.manual_seed(seed)
+        self._episode_observations: list[np.ndarray] = []
+        self._episode_actions: list[int] = []
+        self._episode_rewards: list[float] = []
+        self._latest_diagnostics: dict[str, float] = {}
+
+    def select_action(self, observation: np.ndarray) -> int:
+        """Sample an action from the policy's distribution for the observation.
+
+        Differs from the base class by sampling from the learned policy.
+
+        Args:
+            observation: the current observation from the environment.
+
+        Returns:
+            The sampled action, an integer in [0, action_space_size).
+        """
+        with torch.no_grad():
+            logits = self.policy(torch.as_tensor(observation, dtype=torch.float32))
+            probabilities = torch.softmax(logits, dim=-1)
+            action = torch.multinomial(probabilities, num_samples=1, generator=self.random_generator)
+        return int(action.item())
+
+    def observe_transition(
+        self,
+        observation: np.ndarray,
+        action: int,
+        reward: float,
+        next_observation: np.ndarray,
+        terminated: bool,
+    ) -> None:
+        """Record the step of the current episode.
+
+        Differs from the base class by keeping the observation, action and reward
+        until the episode ends.
+
+        Args:
+            observation: the observation the action was chosen from.
+            action: the action taken.
+            reward: the reward received for the step.
+            next_observation: the observation after the step (not used).
+            terminated: whether the step ended the episode by termination (not used).
+
+        Returns:
+            None.
+        """
+        self._episode_observations.append(np.array(observation, dtype=np.float32, copy=True))
+        self._episode_actions.append(int(action))
+        self._episode_rewards.append(float(reward))
+
+    def end_episode(self) -> None:
+        """Take one REINFORCE gradient step on the finished episode and clear it.
+
+        Differs from the base class by updating the policy. Does nothing if no steps
+        were recorded. Replaces the diagnostics with those of this update.
+
+        Args:
+            None.
+
+        Returns:
+            None.
+        """
+        if not self._episode_rewards:
+            return
+        returns_to_go = []
+        running_return = 0.0
+        for reward in reversed(self._episode_rewards):
+            running_return = reward + self.discount * running_return
+            returns_to_go.append(running_return)
+        returns_to_go.reverse()
+        returns = torch.tensor(returns_to_go, dtype=torch.float32)
+        normalised_returns = (returns - returns.mean()) / (returns.std(unbiased=False) + 1e-8)
+
+        observations = torch.as_tensor(np.stack(self._episode_observations), dtype=torch.float32)
+        actions = torch.as_tensor(self._episode_actions, dtype=torch.int64)
+        log_probabilities = torch.log_softmax(self.policy(observations), dim=-1)
+        chosen_log_probabilities = log_probabilities.gather(1, actions[:, None]).squeeze(1)
+        loss = -(chosen_log_probabilities * normalised_returns).mean()
+
+        self.optimizer.zero_grad()
+        loss.backward()
+        gradient_norm = torch.nn.utils.clip_grad_norm_(self.policy.parameters(), max_norm=float("inf"))
+        self.optimizer.step()
+
+        entropy = -(log_probabilities.exp() * log_probabilities).sum(dim=-1).mean()
+        self._latest_diagnostics = {
+            "loss": float(loss.item()),
+            "grad_norm": float(gradient_norm),
+            "entropy": float(entropy.item()),
+            "episode_return": float(sum(self._episode_rewards)),
+        }
+        self._episode_observations = []
+        self._episode_actions = []
+        self._episode_rewards = []
+
+    def diagnostics(self) -> dict[str, float]:
+        """Report the loss, gradient norm, policy entropy and return of the latest update.
+
+        Differs from the base class by reporting policy-gradient diagnostics.
+
+        Args:
+            None.
+
+        Returns:
+            A dict with "loss", "grad_norm" (gradient norm before the step), "entropy"
+            (mean policy entropy over the episode's observations, measured before the
+            step) and "episode_return" (undiscounted sum of rewards). Empty before the
+            first update.
+        """
+        return dict(self._latest_diagnostics)
