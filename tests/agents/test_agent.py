@@ -161,3 +161,142 @@ def test_random_agent_hooks_do_not_change_action_sequence() -> None:
         )
     hooked_agent.end_episode()
     assert hooked_actions == select_actions(plain_agent, 20)
+
+
+# ModelBasedMPCAgent
+
+from buffers.replay_buffer import ListReplayBuffer
+from agents.agent import ModelBasedMPCAgent
+from models.dynamics_model import LinearDynamicsModel
+from planners.planner import RandomShootingPlanner
+
+MPC_TRUE_A = 0.9 * np.eye(4)
+MPC_TRUE_B = np.array([0.0, 0.1, 0.0, 0.2])
+
+
+def mpc_state(index: int) -> np.ndarray:
+    """A deterministic, varied 4-d state for the given index (no randomness)."""
+    return 1.5 * np.array(
+        [np.sin(index), np.cos(2 * index), np.sin(3 * index + 1), np.cos(5 * index)]
+    )
+
+
+def feed_exact_episode(
+    agent: ModelBasedMPCAgent, a_matrix: np.ndarray, b_vector: np.ndarray, first_index: int, count: int
+) -> None:
+    """Give the agent `count` noise-free transitions s' = A s + B u (action 1 is u=+1, action 0 is
+    u=-1, alternating by index), then end the episode."""
+    for index in range(first_index, first_index + count):
+        state = mpc_state(index)
+        action = index % 2
+        control_input = 2.0 * action - 1.0
+        next_state = a_matrix @ state + b_vector * control_input
+        agent.observe_transition(state, action, -1.0, next_state, False)
+    agent.end_episode()
+
+
+def make_mpc_agent(**overrides) -> ModelBasedMPCAgent:
+    """A ModelBasedMPCAgent with a short horizon and few samples, retraining every episode by default."""
+    settings = dict(retrain_every_k_episodes=1, horizon=1, num_samples=50, seed=0)
+    settings.update(overrides)
+    return ModelBasedMPCAgent(action_space_size=2, **settings)
+
+
+def test_mpc_agent_builds_default_components() -> None:
+    agent = make_mpc_agent(max_transitions=123)
+    assert isinstance(agent.model, LinearDynamicsModel)
+    assert isinstance(agent.planner, RandomShootingPlanner)
+    assert isinstance(agent.buffer, ListReplayBuffer)
+    assert agent.buffer.max_transitions == 123
+
+
+def test_mpc_agent_uses_injected_components() -> None:
+    buffer = ListReplayBuffer(max_transitions=10)
+    model = LinearDynamicsModel(state_dim=4)
+    agent = make_mpc_agent(buffer=buffer, model=model)
+    assert agent.buffer is buffer
+    assert agent.model is model
+
+
+def test_mpc_agent_acts_randomly_but_validly_before_first_fit() -> None:
+    agent = make_mpc_agent()
+    actions = select_actions(agent, 50)
+    assert set(actions) == {0, 1}
+
+
+def test_mpc_agent_same_seed_gives_same_actions_before_fit() -> None:
+    assert select_actions(make_mpc_agent(seed=3), 30) == select_actions(make_mpc_agent(seed=3), 30)
+
+
+def test_mpc_agent_buffer_grows_with_each_observed_transition() -> None:
+    agent = make_mpc_agent()
+    for step in range(3):
+        agent.observe_transition(mpc_state(step), 1, -1.0, mpc_state(step + 1), step == 2)
+        assert agent.buffer.size() == step + 1
+    np.testing.assert_array_equal(agent.buffer.as_arrays()["terminated"], [False, False, True])
+
+
+def test_mpc_agent_model_fits_only_every_k_episodes() -> None:
+    agent = make_mpc_agent(retrain_every_k_episodes=2)
+    feed_exact_episode(agent, MPC_TRUE_A, MPC_TRUE_B, first_index=0, count=15)
+    assert agent.model.is_fitted() is False
+    feed_exact_episode(agent, MPC_TRUE_A, MPC_TRUE_B, first_index=15, count=15)
+    assert agent.model.is_fitted() is True
+
+
+def test_mpc_agent_diagnostics_empty_before_any_episode_ends() -> None:
+    assert make_mpc_agent().diagnostics() == {}
+
+
+def test_mpc_agent_diagnostics_without_fit_only_report_buffer_size() -> None:
+    agent = make_mpc_agent(retrain_every_k_episodes=2)
+    feed_exact_episode(agent, MPC_TRUE_A, MPC_TRUE_B, first_index=0, count=15)
+    assert agent.diagnostics() == {"buffer_size": 15.0}
+
+
+def test_mpc_agent_first_fit_diagnostics_have_train_mse_but_no_one_step_mse() -> None:
+    agent = make_mpc_agent()
+    feed_exact_episode(agent, MPC_TRUE_A, MPC_TRUE_B, first_index=0, count=30)
+    diagnostics = agent.diagnostics()
+    assert set(diagnostics) == {"buffer_size", "model_train_mse"}
+    assert diagnostics["buffer_size"] == 30.0
+    assert diagnostics["model_train_mse"] < 1e-12
+
+
+def test_mpc_agent_one_step_mse_is_near_zero_when_dynamics_are_unchanged() -> None:
+    agent = make_mpc_agent()
+    feed_exact_episode(agent, MPC_TRUE_A, MPC_TRUE_B, first_index=0, count=30)
+    feed_exact_episode(agent, MPC_TRUE_A, MPC_TRUE_B, first_index=30, count=30)
+    assert agent.diagnostics()["model_one_step_mse_new_data"] < 1e-12
+
+
+def test_mpc_agent_one_step_mse_is_large_when_dynamics_change() -> None:
+    agent = make_mpc_agent()
+    feed_exact_episode(agent, MPC_TRUE_A, MPC_TRUE_B, first_index=0, count=30)
+    feed_exact_episode(agent, 0.5 * np.eye(4), np.array([1.0, 0.0, 0.0, 0.0]), first_index=30, count=30)
+    assert agent.diagnostics()["model_one_step_mse_new_data"] > 1e-3
+
+
+def test_mpc_agent_planned_action_reduces_cart_velocity_with_fitted_model() -> None:
+    # With s' = 0.9 s + [0, 0.1, 0, 0.2] u and horizon 1, from [0, 1, 0, 0] the next-step cost is
+    # 0.64 + 0.04 = 0.68 for action 0 (u = -1) and 1.0 + 0.04 = 1.04 for action 1 (u = +1).
+    agent = make_mpc_agent()
+    feed_exact_episode(agent, MPC_TRUE_A, MPC_TRUE_B, first_index=0, count=30)
+    assert agent.select_action(np.array([0.0, 1.0, 0.0, 0.0])) == 0
+
+
+def test_mpc_agent_same_seed_and_data_give_same_planned_action() -> None:
+    agents = [make_mpc_agent(seed=5, horizon=4) for _ in range(2)]
+    for agent in agents:
+        feed_exact_episode(agent, MPC_TRUE_A, MPC_TRUE_B, first_index=0, count=30)
+    observation = np.array([0.1, 0.2, 0.3, 0.4])
+    assert agents[0].select_action(observation) == agents[1].select_action(observation)
+
+
+def test_mpc_agent_does_not_mutate_observation() -> None:
+    agent = make_mpc_agent()
+    feed_exact_episode(agent, MPC_TRUE_A, MPC_TRUE_B, first_index=0, count=30)
+    observation = np.array([0.1, 0.2, 0.3, 0.4])
+    original_observation = observation.copy()
+    agent.select_action(observation)
+    np.testing.assert_array_equal(observation, original_observation)
