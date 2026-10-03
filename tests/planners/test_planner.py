@@ -59,7 +59,7 @@ def test_family_class_follows_contract(cls: type) -> None:
     # It instantiates and the base class attributes are set from the base arguments.
     instance = cls(**construction_arguments(cls))
     for name, value in BASE_INIT_ARGUMENTS.items():
-        assert getattr(instance, name) == value
+        np.testing.assert_array_equal(getattr(instance, name), value)
 
     # Every public method of the base class is present with a compatible signature.
     for name, base_method in public_methods(BASE_CLASS).items():
