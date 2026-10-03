@@ -210,17 +210,55 @@ This document defines the allowed set of atomic actions for building code in thi
 **Postcondition / check:** The report lists, for tests, passes, failures, and errors with their messages; for a script, the exit status, the output it produced, and any error text.
 **Commit message:** none (no commit).
 
+### setup-env
+**Status:** draft
+**Kind:** behaviour-changing
+**Purpose:** Create the project's Python environment with `uv`, from the project's dependency files.
+**Arguments:** Python version (default: the version in `pyproject.toml`, or the latest stable); dependency groups to install (default: all, including dev/test); environment location (default `.venv`).
+**Precondition:** `uv` is installed. No environment exists yet (no `.venv/`). If one does, use `update-env`.
+**May touch:** `.venv/`, `uv.lock`, and `pyproject.toml` only if it does not exist yet (created with `uv init`).
+**Must not:**
+- Edit an existing `pyproject.toml`, or any source or test file.
+- Install packages by any route outside `uv` (e.g. `pip`).
+- Overwrite an existing environment.
+
+**Postcondition / check:**
+- `uv sync` succeeds.
+- `uv run python --version` matches the requested version.
+- `uv run pytest --collect-only` runs without import errors.
+**Commit message:** `setup-env: <python version>` (commits `uv.lock` and `pyproject.toml` if created; `.venv/` is gitignored).
+
+### update-env
+**Status:** draft
+**Kind:** behaviour-changing
+**Purpose:** Change the existing `uv` environment and its dependencies: add, remove, or upgrade packages, or change the Python version. This is the only action that changes dependencies.
+**Arguments:** `operation`: one of `add`, `remove`, `upgrade`, `change-python`, `sync`. For `add`, `remove`, and `upgrade`: the packages (with version constraints and dependency group, e.g. `dev`). For `change-python`: the new version.
+**Precondition:** The environment exists (`.venv/` and `uv.lock` are present). If not, use `setup-env`.
+**May touch:** `pyproject.toml`, `uv.lock`, and `.venv/`. Changes go through `uv add`, `uv remove`, `uv lock --upgrade-package`, and `uv sync`, not hand edits.
+**Must not:**
+- Combine more than one operation in one step.
+- Edit any `.py` file. Code that needs to change after a removal or upgrade is handled by its own action.
+- Recreate the environment from scratch, unless the operation is `change-python`.
+
+**Postcondition / check:**
+- `uv sync` succeeds and `uv lock --check` reports the lockfile is up to date.
+- The full test suite still runs. Failures are reported, not fixed.
+- `remove`: a search finds no remaining imports of the package. Any found are reported to the human.
+**Commit message:** `update-env: <operation> <packages>`
+
 ### update-project-files
 **Status:** draft
-**Kind:** depends on `target`: `docs` is behaviour-preserving; `dependencies` and `config` are behaviour-changing.
-**Purpose:** Change files that are not Python code: documentation, dependencies, and configuration.
-**Arguments:** `target`: one of `docs`, `dependencies`, `config`; the file(s); the change.
+**Kind:** depends on `target`: `docs` is behaviour-preserving; `config` is behaviour-changing.
+**Purpose:** Change files that are not Python code: documentation and configuration. Dependencies and the environment are handled by `update-env`.
+**Arguments:** `target`: one of `docs`, `config`; the file(s); the change.
 **Precondition:** The named files exist or are named for creation.
-**May touch:** only the named non-Python files (e.g. `README.md`, `actions.md`, `pyproject.toml`).
-**Must not:** touch any `.py` file. Docstrings belong to code and are changed by the code's own actions.
+**May touch:** only the named non-Python files (e.g. `README.md`, `actions.md`).
+**Must not:**
+- Touch any `.py` file. Docstrings belong to code and are changed by the code's own actions.
+- Touch `pyproject.toml`'s dependencies, `uv.lock`, or `.venv/`. Use `update-env`.
+
 **Postcondition / check:**
 - `docs`: links and referenced paths resolve.
-- `dependencies`: the environment installs and the full test suite still runs.
 - `config`: the full test suite still passes.
 **Commit message:** `update-project-files: <target> <file path>`
 
@@ -241,7 +279,8 @@ This document defines the allowed set of atomic actions for building code in thi
 - `refactor`: tests need mechanical import updates for `rename` and `move`, so I relaxed "no test edits" to that narrow case. Acceptable?
 - `refactor`: `extract-function` creates a new function that needs its own test. Should the extracted function's test be a required follow-up step in every plan?
 - `modify-code`: when a signature changes, the suite may be red until callers are updated. Allow that, or require the signature change and all callers in one step?
-- `update-project-files`: version policy for dependencies (pinned, ranges)? Is `actions.md` itself covered by `docs`?
+- `update-env`: version policy for dependencies (pinned, ranges)? 
+- `update-project-files`: is `actions.md` itself covered by `docs`?
 - `run-code`: where should script outputs go, and should they be ignored by git?
 - Granularity: how fine should actions be?
 - One commit per action?
@@ -250,6 +289,8 @@ This document defines the allowed set of atomic actions for building code in thi
 - Whether to enforce any actions with hooks.
 
 ## Planning rule (draft)
+
+Every plan has access to all the actions in this document. A plan may use any of them, and the planner reads this document before drafting so that none is missed. The action table in the `structured-plan` skill must list every action here, and a new action is added to both places.
 
 A plan is a numbered list, one action per line, e.g.:
 

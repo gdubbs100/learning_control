@@ -1,6 +1,6 @@
 ---
 name: structured-plan
-description: Plan and carry out any task that will change code in this project, using only the project's atomic actions (explore-code, write-test, write-function, initialise-new-class, write-class, write-script, modify-code, refactor, run-code, update-project-files) instead of free-form editing. Use whenever the user asks for a code change, new feature, bug fix, or refactor, before touching any file.
+description: Plan and carry out any task that will change code in this project, using only the project's atomic actions (explore-code, write-test, write-function, initialise-new-class, write-class, write-script, modify-code, refactor, run-code, setup-env, update-env, update-project-files) instead of free-form editing. Use whenever the user asks for a code change, new feature, bug fix, or refactor, before touching any file.
 ---
 
 # structured-plan
@@ -22,11 +22,16 @@ Any task that creates or changes files in this project. Pure questions need no p
 | `write-script` | behaviour-changing | New script: only imports and control flow |
 | `modify-code` | behaviour-changing | Change the behaviour of one existing function, class, or script |
 | `refactor` | behaviour-preserving | Rename, move, extract-function, inline, or delete-dead-code, one per step |
-| `update-project-files` | depends on target | Docs, dependencies, or config (never `.py` files) |
+| `setup-env` | behaviour-changing | Create the `uv` environment (only if none exists) |
+| `update-env` | behaviour-changing | Add, remove, or upgrade dependencies, or change the Python version, one operation per step |
+| `update-project-files` | depends on target | Docs or config (never `.py` files or dependencies) |
 
 Each action's skill states its arguments, preconditions, what it may touch, what it must not do, and its checks. Read the skill for each action before using it.
 
 ## Procedure
+
+### 0. Load all the actions
+Before drafting, read `actions.md` so every action in it is available to the plan. The table above must list every action in `actions.md`; if they differ, tell the user and treat `actions.md` as the source of truth.
 
 ### 1. Understand the task
 If the task touches existing code, start with `explore-code` to find the relevant files and functions. Ask the user only about things you cannot find out or sensibly default.
