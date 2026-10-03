@@ -38,6 +38,55 @@ class Agent(ABC):
             The chosen action, an integer in [0, action_space_size).
         """
 
+    def observe_transition(
+        self,
+        observation: np.ndarray,
+        action: int,
+        reward: float,
+        next_observation: np.ndarray,
+        terminated: bool,
+    ) -> None:
+        """Receive one step of experience from the environment.
+
+        Learning agents override this to record the transition. By default it does nothing.
+
+        Args:
+            observation: the observation the action was chosen from.
+            action: the action taken.
+            reward: the reward received for the step.
+            next_observation: the observation after the step.
+            terminated: whether the step ended the episode by termination.
+
+        Returns:
+            None.
+        """
+
+    def end_episode(self) -> None:
+        """Tell the agent an episode has finished, so it can learn from it.
+
+        Learning agents override this to update their policy or model. By default it does nothing.
+
+        Args:
+            None.
+
+        Returns:
+            None.
+        """
+
+    def diagnostics(self) -> dict[str, float]:
+        """Report agent-specific numbers about learning, such as losses.
+
+        Agents override this to log what matters for their algorithm. By default there is nothing to report.
+
+        Args:
+            None.
+
+        Returns:
+            A dict of diagnostic name to value, describing the most recent learning step.
+            Empty by default.
+        """
+        return {}
+
 
 class RandomAgent(Agent):
     """An agent that ignores observations and picks actions uniformly at random.
