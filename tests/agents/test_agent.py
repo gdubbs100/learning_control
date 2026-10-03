@@ -300,3 +300,117 @@ def test_mpc_agent_does_not_mutate_observation() -> None:
     original_observation = observation.copy()
     agent.select_action(observation)
     np.testing.assert_array_equal(observation, original_observation)
+
+
+# ReinforceAgent
+
+import math
+
+import torch
+
+from agents.agent import ReinforceAgent
+
+REINFORCE_DIAGNOSTIC_KEYS = {"loss", "grad_norm", "entropy", "episode_return"}
+EPISODE_REWARDS = [-1.0, -2.0, -3.0]
+
+
+def policy_parameters(agent: ReinforceAgent) -> list[torch.Tensor]:
+    """Copies of all the policy network's parameters."""
+    return [parameter.detach().clone() for parameter in agent.policy.parameters()]
+
+
+def play_scripted_episode(agent: ReinforceAgent, rewards: list[float]) -> None:
+    """Choose an action for each reward, report the transition, then end the episode."""
+    for reward in rewards:
+        action = agent.select_action(CARTPOLE_LIKE_OBSERVATION)
+        agent.observe_transition(
+            CARTPOLE_LIKE_OBSERVATION, action, reward, CARTPOLE_LIKE_OBSERVATION, False
+        )
+    agent.end_episode()
+
+
+def test_reinforce_agent_actions_are_in_action_space_and_both_appear() -> None:
+    actions = select_actions(ReinforceAgent(action_space_size=2, seed=0), 100)
+    assert set(actions) == {0, 1}
+
+
+def test_reinforce_agent_same_seed_gives_identical_sequences() -> None:
+    first_actions = select_actions(ReinforceAgent(action_space_size=2, seed=0), 50)
+    second_actions = select_actions(ReinforceAgent(action_space_size=2, seed=0), 50)
+    assert first_actions == second_actions
+
+
+def test_reinforce_agent_different_seeds_give_different_sequences() -> None:
+    first_actions = select_actions(ReinforceAgent(action_space_size=2, seed=0), 50)
+    second_actions = select_actions(ReinforceAgent(action_space_size=2, seed=1), 50)
+    assert first_actions != second_actions
+
+
+def test_reinforce_agent_diagnostics_empty_before_any_episode_ends() -> None:
+    assert ReinforceAgent(action_space_size=2, seed=0).diagnostics() == {}
+
+
+def test_reinforce_agent_end_episode_changes_policy_parameters() -> None:
+    agent = ReinforceAgent(action_space_size=2, seed=0)
+    parameters_before = policy_parameters(agent)
+    play_scripted_episode(agent, EPISODE_REWARDS)
+    parameters_after = policy_parameters(agent)
+    assert any(
+        not torch.equal(before, after) for before, after in zip(parameters_before, parameters_after)
+    )
+
+
+def test_reinforce_agent_end_episode_without_transitions_changes_nothing() -> None:
+    agent = ReinforceAgent(action_space_size=2, seed=0)
+    parameters_before = policy_parameters(agent)
+    agent.end_episode()
+    for before, after in zip(parameters_before, policy_parameters(agent)):
+        assert torch.equal(before, after)
+    assert agent.diagnostics() == {}
+
+
+def test_reinforce_agent_diagnostics_after_an_episode() -> None:
+    agent = ReinforceAgent(action_space_size=2, seed=0)
+    play_scripted_episode(agent, EPISODE_REWARDS)
+    diagnostics = agent.diagnostics()
+    assert REINFORCE_DIAGNOSTIC_KEYS <= set(diagnostics)
+    assert diagnostics["episode_return"] == -6.0
+    assert 0.0 < diagnostics["entropy"] <= math.log(2) + 1e-6
+    assert diagnostics["grad_norm"] > 0.0
+    assert math.isfinite(diagnostics["loss"])
+
+
+def test_reinforce_agent_same_seed_and_data_give_identical_updates() -> None:
+    first_agent = ReinforceAgent(action_space_size=2, seed=0)
+    second_agent = ReinforceAgent(action_space_size=2, seed=0)
+    play_scripted_episode(first_agent, EPISODE_REWARDS)
+    play_scripted_episode(second_agent, EPISODE_REWARDS)
+    for first, second in zip(policy_parameters(first_agent), policy_parameters(second_agent)):
+        assert torch.equal(first, second)
+
+
+def test_reinforce_agent_learns_to_prefer_the_rewarded_action_on_a_toy_problem() -> None:
+    # Constant observation; action 1 earns +1 and action 0 earns -1, over 10-step episodes.
+    agent = ReinforceAgent(action_space_size=2, seed=0)
+    for _ in range(300):
+        for _ in range(10):
+            action = agent.select_action(CARTPOLE_LIKE_OBSERVATION)
+            reward = 1.0 if action == 1 else -1.0
+            agent.observe_transition(
+                CARTPOLE_LIKE_OBSERVATION, action, reward, CARTPOLE_LIKE_OBSERVATION, False
+            )
+        agent.end_episode()
+    action_probabilities = torch.softmax(
+        agent.policy(torch.as_tensor(CARTPOLE_LIKE_OBSERVATION)), dim=-1
+    )
+    assert float(action_probabilities[1]) > 0.9
+
+
+def test_reinforce_agent_does_not_mutate_observation() -> None:
+    agent = ReinforceAgent(action_space_size=2, seed=0)
+    observation = np.array([0.1, 0.2, 0.3, 0.4], dtype=np.float32)
+    original_observation = observation.copy()
+    agent.select_action(observation)
+    agent.observe_transition(observation, 1, -1.0, observation, False)
+    agent.end_episode()
+    np.testing.assert_array_equal(observation, original_observation)
