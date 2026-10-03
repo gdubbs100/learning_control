@@ -7,7 +7,7 @@ from buffers.replay_buffer import ReplayBuffer
 
 BASE_CLASS = ReplayBuffer
 # Arguments for the base class __init__ parameters, used to construct every class in the family.
-BASE_INIT_ARGUMENTS: dict = {}
+BASE_INIT_ARGUMENTS = {"max_transitions": 5}
 # Values for keyword-only parameters that child classes add, chosen by type annotation.
 EXTRA_ARGUMENT_VALUES_BY_TYPE = {int: 0, float: 0.0, str: "", bool: False}
 
