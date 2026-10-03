@@ -154,3 +154,114 @@ def test_episodic_experiment_run_mutates_env() -> None:
     experiment.run()
     state_after_run = np.array(experiment.env.unwrapped.state, copy=True)
     assert not np.array_equal(state_before_run, state_after_run)
+
+
+# LearningExperiment
+
+from agents.agent import Agent
+from experiments.experiment import LearningExperiment
+
+
+class RecordingAgent(Agent):
+    """An agent that always pushes left and records every hook call, for checking the experiment."""
+
+    def __init__(self) -> None:
+        super().__init__(action_space_size=2)
+        self.chosen_from: list[np.ndarray] = []
+        self.observed_from: list[np.ndarray] = []
+        self.episodes_ended = 0
+
+    def select_action(self, observation: np.ndarray) -> int:
+        self.chosen_from.append(np.array(observation, copy=True))
+        return 0
+
+    def observe_transition(
+        self,
+        observation: np.ndarray,
+        action: int,
+        reward: float,
+        next_observation: np.ndarray,
+        terminated: bool,
+    ) -> None:
+        self.observed_from.append(np.array(observation, copy=True))
+
+    def end_episode(self) -> None:
+        self.episodes_ended += 1
+
+    def diagnostics(self) -> dict[str, float]:
+        return {"episodes_ended": float(self.episodes_ended)}
+
+
+def make_learning_experiment(agent: Agent, num_episodes: int, **options) -> LearningExperiment:
+    """A LearningExperiment on CartPole-v1 with seed 0."""
+    return LearningExperiment(agent, gym.make("CartPole-v1"), num_episodes, 0, **options)
+
+
+def test_learning_experiment_starts_with_empty_results_and_diagnostics_log() -> None:
+    experiment = make_learning_experiment(RecordingAgent(), num_episodes=3)
+    assert experiment.results == {"episode_returns": [], "episode_lengths": []}
+    assert experiment.diagnostics_log == []
+
+
+def test_learning_experiment_matches_episodic_experiment_for_a_non_learning_agent() -> None:
+    learning_experiment = make_learning_experiment(RandomAgent(action_space_size=2, seed=0), 3)
+    episodic_experiment = make_seeded_cartpole_experiment(num_episodes=3, seed=0)
+    learning_experiment.run()
+    episodic_experiment.run()
+    assert learning_experiment.results == episodic_experiment.results
+
+
+def test_learning_experiment_calls_hooks_once_per_step_and_per_episode() -> None:
+    agent = RecordingAgent()
+    experiment = make_learning_experiment(agent, num_episodes=3)
+    experiment.run()
+    assert len(agent.observed_from) == int(sum(experiment.results["episode_lengths"]))
+    assert len(agent.chosen_from) == len(agent.observed_from)
+    assert agent.episodes_ended == 3
+
+
+def test_learning_experiment_reports_the_observation_the_action_was_chosen_from() -> None:
+    agent = RecordingAgent()
+    make_learning_experiment(agent, num_episodes=2).run()
+    for chosen, observed in zip(agent.chosen_from, agent.observed_from):
+        np.testing.assert_array_equal(chosen, observed)
+
+
+def test_learning_experiment_logs_agent_diagnostics_after_each_episode() -> None:
+    experiment = make_learning_experiment(RecordingAgent(), num_episodes=3)
+    experiment.run()
+    assert experiment.diagnostics_log == [
+        {"episodes_ended": 1.0},
+        {"episodes_ended": 2.0},
+        {"episodes_ended": 3.0},
+    ]
+
+
+def test_learning_experiment_diagnostics_log_entries_are_independent_of_the_agent() -> None:
+    agent = RecordingAgent()
+    experiment = make_learning_experiment(agent, num_episodes=2)
+    experiment.run()
+    experiment.diagnostics_log[0]["episodes_ended"] = -1.0
+    assert agent.diagnostics() == {"episodes_ended": 2.0}
+
+
+def test_learning_experiment_max_seconds_zero_stops_after_one_episode() -> None:
+    experiment = make_learning_experiment(RecordingAgent(), num_episodes=10, max_seconds=0.0)
+    experiment.run()
+    assert len(experiment.results["episode_returns"]) == 1
+    assert len(experiment.diagnostics_log) == 1
+
+
+def test_learning_experiment_stops_early_when_returns_converge() -> None:
+    experiment = make_learning_experiment(
+        RecordingAgent(), num_episodes=10, convergence_window=2, convergence_tolerance=1e6
+    )
+    experiment.run()
+    assert len(experiment.results["episode_returns"]) == 4
+
+
+def test_learning_experiment_without_stopping_options_runs_all_episodes() -> None:
+    experiment = make_learning_experiment(RecordingAgent(), num_episodes=5)
+    experiment.run()
+    assert len(experiment.results["episode_returns"]) == 5
+    assert len(experiment.diagnostics_log) == 5
