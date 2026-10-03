@@ -127,3 +127,37 @@ def test_random_agent_both_actions_appear() -> None:
     agent = RandomAgent(action_space_size=2, seed=0)
     actions = select_actions(agent, 100)
     assert set(actions) == {0, 1}
+
+
+# Agent learning and logging hooks (no-ops by default, inherited by RandomAgent)
+
+
+def test_random_agent_observe_transition_returns_none() -> None:
+    agent = RandomAgent(action_space_size=2, seed=0)
+    result = agent.observe_transition(
+        CARTPOLE_LIKE_OBSERVATION, 1, -1.0, CARTPOLE_LIKE_OBSERVATION, False
+    )
+    assert result is None
+
+
+def test_random_agent_end_episode_returns_none() -> None:
+    agent = RandomAgent(action_space_size=2, seed=0)
+    assert agent.end_episode() is None
+
+
+def test_random_agent_diagnostics_is_empty_dict() -> None:
+    agent = RandomAgent(action_space_size=2, seed=0)
+    assert agent.diagnostics() == {}
+
+
+def test_random_agent_hooks_do_not_change_action_sequence() -> None:
+    plain_agent = RandomAgent(action_space_size=2, seed=0)
+    hooked_agent = RandomAgent(action_space_size=2, seed=0)
+    hooked_actions = []
+    for _ in range(20):
+        hooked_actions.append(hooked_agent.select_action(CARTPOLE_LIKE_OBSERVATION))
+        hooked_agent.observe_transition(
+            CARTPOLE_LIKE_OBSERVATION, hooked_actions[-1], -1.0, CARTPOLE_LIKE_OBSERVATION, False
+        )
+    hooked_agent.end_episode()
+    assert hooked_actions == select_actions(plain_agent, 20)
