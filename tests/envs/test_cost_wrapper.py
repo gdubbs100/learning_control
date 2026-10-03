@@ -90,3 +90,74 @@ def test_family_class_follows_contract(cls: type) -> None:
                     f"added __init__ parameter {name} must be keyword-only"
                 )
         assert "super().__init__(" in inspect.getsource(cls.__init__)
+
+
+# QuadraticCostCartPole
+
+import numpy as np
+
+from envs.cost_wrapper import QuadraticCostCartPole
+
+ACTION_SEQUENCE = [1, 0, 1, 1, 0]
+TOLERANCE = 1e-12
+
+
+def test_quadratic_cost_cartpole_compute_reward_is_negative_cost_for_both_actions() -> None:
+    wrapper = QuadraticCostCartPole(gym.make("CartPole-v1"))
+    observation = np.array([1.0, 2.0, 0.0, 0.0])
+    assert wrapper.compute_reward(observation, 0) == -6.0
+    assert wrapper.compute_reward(observation, 1) == -6.0
+
+
+def test_quadratic_cost_cartpole_step_reward_is_negative_cost_of_next_observation() -> None:
+    wrapper = QuadraticCostCartPole(gym.make("CartPole-v1"))
+    wrapper.reset(seed=0)
+    for action in ACTION_SEQUENCE:
+        observation, reward, terminated, truncated, _ = wrapper.step(action)
+        expected_reward = -(float(np.sum(observation.astype(np.float64) ** 2)) + 1.0)
+        assert abs(reward - expected_reward) < TOLERANCE
+        if terminated or truncated:
+            break
+
+
+def test_quadratic_cost_cartpole_respects_non_zero_target_state() -> None:
+    wrapper = QuadraticCostCartPole(gym.make("CartPole-v1"), target_state=np.array([1.0, 0.0, 0.0, 0.0]))
+    wrapper.reset(seed=0)
+    observation, reward, _, _, _ = wrapper.step(1)
+    state = observation.astype(np.float64)
+    expected_reward = -((state[0] - 1.0) ** 2 + state[1] ** 2 + state[2] ** 2 + state[3] ** 2 + 1.0)
+    assert abs(reward - expected_reward) < TOLERANCE
+
+
+def test_quadratic_cost_cartpole_default_target_is_zeros() -> None:
+    wrapper = QuadraticCostCartPole(gym.make("CartPole-v1"))
+    np.testing.assert_array_equal(wrapper.target_state, np.zeros(4))
+
+
+def test_quadratic_cost_cartpole_reset_matches_unwrapped_env() -> None:
+    wrapped_observation, _ = QuadraticCostCartPole(gym.make("CartPole-v1")).reset(seed=7)
+    plain_observation, _ = gym.make("CartPole-v1").reset(seed=7)
+    np.testing.assert_array_equal(wrapped_observation, plain_observation)
+
+
+def test_quadratic_cost_cartpole_only_changes_the_reward() -> None:
+    wrapper = QuadraticCostCartPole(gym.make("CartPole-v1"))
+    plain_env = gym.make("CartPole-v1")
+    wrapper.reset(seed=0)
+    plain_env.reset(seed=0)
+    for action in ACTION_SEQUENCE:
+        wrapped_step = wrapper.step(action)
+        plain_step = plain_env.step(action)
+        np.testing.assert_array_equal(wrapped_step[0], plain_step[0])
+        assert wrapped_step[2] == plain_step[2]
+        assert wrapped_step[3] == plain_step[3]
+        if wrapped_step[2] or wrapped_step[3]:
+            break
+
+
+def test_quadratic_cost_cartpole_does_not_mutate_target_argument() -> None:
+    target = np.array([0.5, 0.0, 0.0, 0.0])
+    wrapper = QuadraticCostCartPole(gym.make("CartPole-v1"), target_state=target)
+    wrapper.reset(seed=0)
+    wrapper.step(1)
+    np.testing.assert_array_equal(target, [0.5, 0.0, 0.0, 0.0])
