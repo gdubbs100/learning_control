@@ -3,6 +3,11 @@ from abc import ABC, abstractmethod
 import numpy as np
 import torch
 
+from buffers.replay_buffer import ListReplayBuffer, ReplayBuffer
+from models.dynamics_model import DynamicsModel, LinearDynamicsModel
+from planners.planner import Planner, RandomShootingPlanner
+from utils.control.action_to_input import action_to_input
+
 
 class Agent(ABC):
     """Base class for agents that choose discrete actions from environment observations.
@@ -132,3 +137,179 @@ class RandomAgent(Agent):
             low=0, high=self.action_space_size, size=(1,), generator=self.random_generator
         )
         return int(random_action.item())
+
+
+class ModelBasedMPCAgent(Agent):
+    """An agent that learns a dynamics model and plans with it by model predictive control.
+
+    Every transition is stored in a replay buffer. Every `retrain_every_k_episodes`
+    episodes the dynamics model is re-fitted from scratch on the whole buffer. Until
+    the first fit the agent acts uniformly at random; afterwards, at each step, the
+    planner searches for the lowest-cost action sequence from the current observation
+    and the first action of that sequence is taken (re-planning every step).
+
+    Attributes:
+        model: the dynamics model that is learned and used for planning.
+        planner: the optimiser that picks action sequences using the model.
+        buffer: the replay buffer holding past transitions.
+        retrain_every_k_episodes: how many episodes pass between model fits.
+        seed: the seed of the generator used for random actions before the first fit.
+        random_generator: the seeded generator for those random actions.
+        episodes_seen: the number of episodes ended so far.
+        transitions_since_fit: the number of transitions observed since the last fit.
+    """
+
+    model: DynamicsModel
+    planner: Planner
+    buffer: ReplayBuffer
+    retrain_every_k_episodes: int
+    seed: int
+    random_generator: np.random.Generator
+    episodes_seen: int
+    transitions_since_fit: int
+
+    def __init__(
+        self,
+        action_space_size: int,
+        *,
+        observation_size: int = 4,
+        retrain_every_k_episodes: int = 5,
+        horizon: int = 10,
+        num_samples: int = 1000,
+        max_transitions: int = 100_000,
+        target_state: np.ndarray | None = None,
+        model: DynamicsModel | None = None,
+        planner: Planner | None = None,
+        buffer: ReplayBuffer | None = None,
+        seed: int = 0,
+    ) -> None:
+        """Store the components of the agent, building defaults for any that are not given.
+
+        Args:
+            action_space_size: the number of discrete actions available.
+            observation_size: the number of dimensions of the observation (the state).
+            retrain_every_k_episodes: how many episodes pass between model fits.
+            horizon: the planning horizon, used when building the default planner.
+            num_samples: the number of sequences per plan, used when building the default planner.
+            max_transitions: the buffer capacity, used when building the default buffer.
+            target_state: the state s* the planner steers towards, used when building the
+                default planner. Defaults to zeros.
+            model: the dynamics model. Defaults to a LinearDynamicsModel.
+            planner: the planner. Defaults to a RandomShootingPlanner.
+            buffer: the replay buffer. Defaults to a ListReplayBuffer.
+            seed: the seed for random actions and for the default planner.
+
+        Returns:
+            None.
+        """
+        super().__init__(action_space_size)
+        if target_state is None:
+            target_state = np.zeros(observation_size)
+        if model is None:
+            model = LinearDynamicsModel(state_dim=observation_size)
+        if planner is None:
+            planner = RandomShootingPlanner(
+                horizon=horizon,
+                action_space_size=action_space_size,
+                target_state=target_state,
+                num_samples=num_samples,
+                seed=seed,
+            )
+        if buffer is None:
+            buffer = ListReplayBuffer(max_transitions=max_transitions)
+        self.model = model
+        self.planner = planner
+        self.buffer = buffer
+        self.retrain_every_k_episodes = retrain_every_k_episodes
+        self.seed = seed
+        self.random_generator = np.random.default_rng(seed)
+        self.episodes_seen = 0
+        self.transitions_since_fit = 0
+        self._latest_diagnostics: dict[str, float] = {}
+
+    def select_action(self, observation: np.ndarray) -> int:
+        """Choose a random action before the model is fitted, otherwise plan with the model.
+
+        Differs from the base class by planning an action sequence with the learned
+        model and returning its first action once the model has been fitted.
+
+        Args:
+            observation: the current observation from the environment.
+
+        Returns:
+            The chosen action, an integer in [0, action_space_size).
+        """
+        if not self.model.is_fitted():
+            return int(self.random_generator.integers(0, self.action_space_size))
+        planned_actions = self.planner.plan(self.model, np.asarray(observation, dtype=np.float64))
+        return int(planned_actions[0])
+
+    def observe_transition(
+        self,
+        observation: np.ndarray,
+        action: int,
+        reward: float,
+        next_observation: np.ndarray,
+        terminated: bool,
+    ) -> None:
+        """Store the transition in the replay buffer.
+
+        Differs from the base class by recording the transition.
+
+        Args:
+            observation: the observation the action was chosen from.
+            action: the action taken.
+            reward: the reward received for the step.
+            next_observation: the observation after the step.
+            terminated: whether the step ended the episode by termination.
+
+        Returns:
+            None.
+        """
+        self.buffer.add(observation, action, reward, next_observation, terminated)
+        self.transitions_since_fit += 1
+
+    def end_episode(self) -> None:
+        """Count the episode and, every k episodes, re-fit the dynamics model on the buffer.
+
+        Differs from the base class by training the model. Before re-fitting, the
+        previous model (if any) is scored on the transitions collected since the last
+        fit, so the diagnostics show how well it predicted data it had not seen.
+
+        Args:
+            None.
+
+        Returns:
+            None. Replaces the diagnostics with those of this episode.
+        """
+        self.episodes_seen += 1
+        diagnostics: dict[str, float] = {"buffer_size": float(self.buffer.size())}
+        if self.episodes_seen % self.retrain_every_k_episodes == 0 and self.buffer.size() > 0:
+            arrays = self.buffer.as_arrays()
+            states = arrays["observations"]
+            inputs = action_to_input(arrays["actions"])
+            next_states = arrays["next_observations"]
+            if self.model.is_fitted():
+                newest = min(self.transitions_since_fit, self.buffer.size())
+                predictions = self.model.predict(states[-newest:], inputs[-newest:])
+                errors = predictions - next_states[-newest:]
+                diagnostics["model_one_step_mse_new_data"] = float(np.mean(errors**2))
+            fit_metrics = self.model.fit(states, inputs, next_states)
+            diagnostics["model_train_mse"] = float(fit_metrics["train_mse"])
+            self.transitions_since_fit = 0
+        self._latest_diagnostics = diagnostics
+
+    def diagnostics(self) -> dict[str, float]:
+        """Report the accuracy of the dynamics model and the buffer size from the latest episode end.
+
+        Differs from the base class by reporting model diagnostics.
+
+        Args:
+            None.
+
+        Returns:
+            A dict with "buffer_size". When the model was re-fitted at the latest episode
+            end it also has "model_train_mse", and, if there was an earlier fit,
+            "model_one_step_mse_new_data". Empty before the first episode ends.
+        """
+        return dict(self._latest_diagnostics)
