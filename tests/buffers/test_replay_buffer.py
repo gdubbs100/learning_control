@@ -105,17 +105,17 @@ def add_two_example_transitions(buffer: ReplayBuffer) -> None:
 
 
 def test_list_replay_buffer_starts_empty() -> None:
-    assert ListReplayBuffer().size() == 0
+    assert ListReplayBuffer(max_transitions=100).size() == 0
 
 
 def test_list_replay_buffer_size_counts_added_transitions() -> None:
-    buffer = ListReplayBuffer()
+    buffer = ListReplayBuffer(max_transitions=100)
     add_two_example_transitions(buffer)
     assert buffer.size() == 2
 
 
 def test_list_replay_buffer_as_arrays_has_expected_keys_and_shapes() -> None:
-    buffer = ListReplayBuffer()
+    buffer = ListReplayBuffer(max_transitions=100)
     add_two_example_transitions(buffer)
     arrays = buffer.as_arrays()
     assert set(arrays) == {"observations", "actions", "rewards", "next_observations", "terminated"}
@@ -128,7 +128,7 @@ def test_list_replay_buffer_as_arrays_has_expected_keys_and_shapes() -> None:
 
 
 def test_list_replay_buffer_as_arrays_preserves_values_and_order() -> None:
-    buffer = ListReplayBuffer()
+    buffer = ListReplayBuffer(max_transitions=100)
     add_two_example_transitions(buffer)
     arrays = buffer.as_arrays()
     np.testing.assert_array_equal(arrays["observations"], [[1.0, 2.0, 3.0, 4.0], [5.0, 6.0, 7.0, 8.0]])
@@ -141,7 +141,7 @@ def test_list_replay_buffer_as_arrays_preserves_values_and_order() -> None:
 
 
 def test_list_replay_buffer_stores_copies_of_added_arrays() -> None:
-    buffer = ListReplayBuffer()
+    buffer = ListReplayBuffer(max_transitions=100)
     observation = np.array([1.0, 2.0, 3.0, 4.0])
     next_observation = np.array([1.5, 2.5, 3.5, 4.5])
     buffer.add(observation, 0, -1.0, next_observation, False)
@@ -150,3 +150,37 @@ def test_list_replay_buffer_stores_copies_of_added_arrays() -> None:
     arrays = buffer.as_arrays()
     np.testing.assert_array_equal(arrays["observations"], [[1.0, 2.0, 3.0, 4.0]])
     np.testing.assert_array_equal(arrays["next_observations"], [[1.5, 2.5, 3.5, 4.5]])
+
+
+def add_transitions_with_actions(buffer: ReplayBuffer, actions: list[int]) -> None:
+    """Add one transition per action, each with a distinct observation and reward."""
+    for action in actions:
+        buffer.add(np.full(4, float(action)), action, -float(action), np.full(4, action + 0.5), False)
+
+
+def test_list_replay_buffer_stores_max_transitions() -> None:
+    assert ListReplayBuffer(max_transitions=7).max_transitions == 7
+
+
+def test_list_replay_buffer_drops_oldest_transitions_when_full() -> None:
+    buffer = ListReplayBuffer(max_transitions=3)
+    add_transitions_with_actions(buffer, [0, 1, 2, 3, 4])
+    arrays = buffer.as_arrays()
+    assert buffer.size() == 3
+    np.testing.assert_array_equal(arrays["actions"], [2, 3, 4])
+    np.testing.assert_array_equal(arrays["rewards"], [-2.0, -3.0, -4.0])
+    np.testing.assert_array_equal(arrays["observations"][:, 0], [2.0, 3.0, 4.0])
+    np.testing.assert_array_equal(arrays["next_observations"][:, 0], [2.5, 3.5, 4.5])
+
+
+def test_list_replay_buffer_size_never_exceeds_max_transitions() -> None:
+    buffer = ListReplayBuffer(max_transitions=3)
+    for action in range(10):
+        add_transitions_with_actions(buffer, [action % 2])
+        assert buffer.size() <= 3
+
+
+@pytest.mark.parametrize("invalid_max_transitions", [0, -1])
+def test_list_replay_buffer_rejects_max_transitions_below_one(invalid_max_transitions: int) -> None:
+    with pytest.raises(ValueError):
+        ListReplayBuffer(max_transitions=invalid_max_transitions)
