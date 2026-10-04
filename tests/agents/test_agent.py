@@ -587,3 +587,49 @@ def test_reinforce_agent_hyperparameters_do_not_change_after_learning() -> None:
     before = agent.hyperparameters()
     play_scripted_episode(agent, EPISODE_REWARDS)
     assert agent.hyperparameters() == before
+
+
+# ModelBasedMPCAgent.hyperparameters
+
+
+def test_mpc_agent_hyperparameters_include_own_settings_and_nested_components() -> None:
+    agent = make_mpc_agent(
+        retrain_every_k_episodes=3,
+        min_buffer_size_for_update=50,
+        test_fraction=0.25,
+        fit_sample_size=200,
+        horizon=6,
+        num_samples=40,
+        max_transitions=999,
+        seed=2,
+    )
+    assert agent.hyperparameters() == {
+        "type": "ModelBasedMPCAgent",
+        "action_space_size": 2,
+        "retrain_every_k_episodes": 3,
+        "min_buffer_size_for_update": 50,
+        "test_fraction": 0.25,
+        "fit_sample_size": 200,
+        "seed": 2,
+        "model": {"type": "LinearDynamicsModel", "state_dim": 4},
+        "planner": {
+            "type": "RandomShootingPlanner",
+            "horizon": 6,
+            "action_space_size": 2,
+            "target_state": [0.0, 0.0, 0.0, 0.0],
+            "num_samples": 40,
+            "seed": 2,
+        },
+        "buffer": {"type": "ListReplayBuffer", "max_transitions": 999},
+    }
+
+
+def test_mpc_agent_hyperparameters_report_none_fit_sample_size() -> None:
+    assert make_mpc_agent().hyperparameters()["fit_sample_size"] is None
+
+
+def test_mpc_agent_hyperparameters_are_json_serialisable() -> None:
+    import json
+
+    hyperparameters = make_mpc_agent().hyperparameters()
+    assert json.loads(json.dumps(hyperparameters)) == hyperparameters
