@@ -153,6 +153,19 @@ class RandomAgent(Agent):
         )
         return int(random_action.item())
 
+    def hyperparameters(self) -> dict[str, Any]:
+        """Report the action space size and the seed.
+
+        Differs from the base class by adding "seed".
+
+        Args:
+            None.
+
+        Returns:
+            A dict with the base class entries and "seed".
+        """
+        return {**super().hyperparameters(), "seed": self.seed}
+
 
 class ModelBasedMPCAgent(Agent):
     """An agent that learns a dynamics model and plans with it by model predictive control.
