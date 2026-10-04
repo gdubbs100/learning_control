@@ -367,6 +367,32 @@ class ModelBasedMPCAgent(Agent):
         """
         return dict(self._latest_diagnostics)
 
+    def hyperparameters(self) -> dict[str, Any]:
+        """Report the agent's learning settings and those of its model, planner and buffer.
+
+        Differs from the base class by adding the retraining settings and the seed, and
+        the nested "model", "planner" and "buffer" hyperparameters.
+
+        Args:
+            None.
+
+        Returns:
+            A dict with the base class entries, "retrain_every_k_episodes",
+            "min_buffer_size_for_update", "test_fraction", "fit_sample_size", "seed",
+            and "model", "planner" and "buffer" dicts from those components.
+        """
+        return {
+            **super().hyperparameters(),
+            "retrain_every_k_episodes": self.retrain_every_k_episodes,
+            "min_buffer_size_for_update": self.min_buffer_size_for_update,
+            "test_fraction": self.test_fraction,
+            "fit_sample_size": self.fit_sample_size,
+            "seed": self.seed,
+            "model": self.model.hyperparameters(),
+            "planner": self.planner.hyperparameters(),
+            "buffer": self.buffer.hyperparameters(),
+        }
+
 
 class ReinforceAgent(Agent):
     """A policy-gradient agent trained with REINFORCE, learning once at the end of each episode.
