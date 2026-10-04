@@ -139,3 +139,16 @@ class RandomShootingPlanner(Planner):
             predicted_states = model.predict(predicted_states, control_inputs)
             total_costs += quadratic_cost(predicted_states, control_inputs, self.target_state)
         return action_sequences[int(np.argmin(total_costs))].copy()
+
+    def hyperparameters(self) -> dict[str, str | int | float | bool | None | list[float]]:
+        """Report the base planner settings plus the number of samples and the seed.
+
+        Differs from the base class by adding "num_samples" and "seed".
+
+        Args:
+            None.
+
+        Returns:
+            A dict with the base class entries and "num_samples" and "seed".
+        """
+        return {**super().hyperparameters(), "num_samples": self.num_samples, "seed": self.seed}
