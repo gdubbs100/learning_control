@@ -10,7 +10,8 @@ def results_to_dataframe(results: dict[str, list[float]]) -> pd.DataFrame:
 
     Returns:
         A DataFrame with columns "episode" (zero-based episode index),
-        "return" (from "episode_returns") and "steps" (from "episode_lengths").
+        "return" (from "episode_returns"), "steps" (from "episode_lengths") and
+        "cost" (the negated return, since the reward is the negative cost).
     """
     episode_returns = list(results["episode_returns"])
     episode_lengths = list(results["episode_lengths"])
@@ -19,5 +20,6 @@ def results_to_dataframe(results: dict[str, list[float]]) -> pd.DataFrame:
             "episode": list(range(len(episode_returns))),
             "return": episode_returns,
             "steps": episode_lengths,
+            "cost": [-episode_return for episode_return in episode_returns],
         }
     )
