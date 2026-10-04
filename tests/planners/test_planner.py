@@ -110,6 +110,12 @@ class OneDimensionalModel(DynamicsModel):
     def predict(self, states: np.ndarray, inputs: np.ndarray) -> np.ndarray:
         return states + 0.5 * inputs[..., None]
 
+    def parameters(self) -> dict[str, float]:
+        return {}
+
+    def evaluate(self, states: np.ndarray, inputs: np.ndarray, next_states: np.ndarray) -> dict[str, float]:
+        return {"mse": 0.0}
+
     def is_fitted(self) -> bool:
         return True
 
@@ -163,3 +169,31 @@ def test_random_shooting_does_not_mutate_state_or_target() -> None:
     np.testing.assert_array_equal(state, [0.7])
     np.testing.assert_array_equal(target, [0.2])
     np.testing.assert_array_equal(planner.target_state, [0.2])
+
+
+# RandomShootingPlanner.hyperparameters
+
+
+def test_random_shooting_hyperparameters() -> None:
+    planner = RandomShootingPlanner(
+        horizon=7,
+        action_space_size=2,
+        target_state=np.array([0.5, -1.0]),
+        num_samples=321,
+        seed=9,
+    )
+    assert planner.hyperparameters() == {
+        "type": "RandomShootingPlanner",
+        "horizon": 7,
+        "action_space_size": 2,
+        "target_state": [0.5, -1.0],
+        "num_samples": 321,
+        "seed": 9,
+    }
+
+
+def test_random_shooting_hyperparameters_are_json_serialisable() -> None:
+    import json
+
+    planner = RandomShootingPlanner(horizon=3, action_space_size=2, target_state=np.zeros(4))
+    assert json.loads(json.dumps(planner.hyperparameters())) == planner.hyperparameters()
