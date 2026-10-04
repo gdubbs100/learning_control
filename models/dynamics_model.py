@@ -56,6 +56,46 @@ class DynamicsModel(ABC):
         """
 
     @abstractmethod
+    def parameters(self) -> dict[str, float]:
+        """Report the fitted parameters of the model as a flat dict of name to value.
+
+        Args:
+            None.
+
+        Returns:
+            A dict of parameter name to float value. Raises RuntimeError if the model
+            has not been fitted.
+        """
+
+    @abstractmethod
+    def evaluate(self, states: np.ndarray, inputs: np.ndarray, next_states: np.ndarray) -> dict[str, float]:
+        """Score the fitted model's one-step predictions on transitions, typically held-out ones.
+
+        Args:
+            states: the states before each step, shape (num_transitions, state_dim).
+            inputs: the scalar control input applied at each step, shape (num_transitions,).
+            next_states: the states after each step, shape (num_transitions, state_dim).
+
+        Returns:
+            Evaluation metrics as a dict of name to value. Always includes "mse", the mean
+            squared one-step prediction error. Raises RuntimeError if the model has not
+            been fitted.
+        """
+
+    def hyperparameters(self) -> dict[str, str | int | float | bool | None]:
+        """Report the settings of the model that affect learning, as JSON-safe values.
+
+        Subclasses with further settings extend the returned dict.
+
+        Args:
+            None.
+
+        Returns:
+            A dict with "type" (the class name) and "state_dim".
+        """
+        return {"type": type(self).__name__, "state_dim": self.state_dim}
+
+    @abstractmethod
     def is_fitted(self) -> bool:
         """Say whether the model has been trained and can make predictions.
 
