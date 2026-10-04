@@ -13,10 +13,17 @@ def test_results_to_dataframe_two_episodes() -> None:
     dataframe = results_to_dataframe(example_results())
     assert isinstance(dataframe, pd.DataFrame)
     assert len(dataframe) == 2
-    assert list(dataframe.columns) == ["episode", "return", "steps"]
+    assert list(dataframe.columns) == ["episode", "return", "steps", "cost"]
     assert list(dataframe["episode"]) == [0, 1]
     assert list(dataframe["return"]) == [10.0, 20.0]
     assert list(dataframe["steps"]) == [10.0, 20.0]
+    assert list(dataframe["cost"]) == [-10.0, -20.0]
+
+
+def test_results_to_dataframe_cost_is_the_negated_return() -> None:
+    results = {"episode_returns": [-3.5, 0.0, 2.0], "episode_lengths": [5.0, 6.0, 7.0]}
+    dataframe = results_to_dataframe(results)
+    assert list(dataframe["cost"]) == [3.5, -0.0, -2.0]
 
 
 def test_results_to_dataframe_is_deterministic() -> None:
