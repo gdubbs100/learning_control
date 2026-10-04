@@ -511,3 +511,25 @@ class ReinforceAgent(Agent):
             first update.
         """
         return dict(self._latest_diagnostics)
+
+    def hyperparameters(self) -> dict[str, Any]:
+        """Report the policy network size, learning rate, discount and seed.
+
+        Differs from the base class by adding "observation_size" and "hidden_size"
+        (read from the policy's layers), "learning_rate" (read from the optimiser),
+        "discount" and "seed".
+
+        Args:
+            None.
+
+        Returns:
+            A dict with the base class entries and the entries above.
+        """
+        return {
+            **super().hyperparameters(),
+            "observation_size": int(self.policy[0].in_features),
+            "hidden_size": int(self.policy[0].out_features),
+            "learning_rate": float(self.optimizer.param_groups[0]["lr"]),
+            "discount": self.discount,
+            "seed": self.seed,
+        }
