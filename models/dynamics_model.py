@@ -139,6 +139,48 @@ class LinearDynamicsModel(DynamicsModel):
         next_states = states_tensor @ self.A.T + inputs_tensor[..., None] * self.B
         return next_states.numpy()
 
+    def parameters(self) -> dict[str, float]:
+        """Report the entries of A and B as a flat dict.
+
+        Differs from the base class by naming the fitted matrix entries.
+
+        Args:
+            None.
+
+        Returns:
+            A dict with "A_i_j" for each entry of A (row i, column j) followed by "B_i"
+            for each entry of B, all as floats. Raises RuntimeError if the model has not
+            been fitted.
+        """
+        if self.A is None or self.B is None:
+            raise RuntimeError("LinearDynamicsModel must be fitted before parameters is called")
+        parameters = {
+            f"A_{row}_{column}": float(self.A[row, column])
+            for row in range(self.state_dim)
+            for column in range(self.state_dim)
+        }
+        parameters.update({f"B_{row}": float(self.B[row]) for row in range(self.state_dim)})
+        return parameters
+
+    def evaluate(self, states: np.ndarray, inputs: np.ndarray, next_states: np.ndarray) -> dict[str, float]:
+        """Score the fitted model's one-step predictions on the given transitions.
+
+        Differs from the base class by computing the mean squared error from `predict`.
+
+        Args:
+            states: the states before each step, shape (num_transitions, state_dim).
+            inputs: the scalar control input applied at each step, shape (num_transitions,).
+            next_states: the states after each step, shape (num_transitions, state_dim).
+
+        Returns:
+            A dict with "mse", the mean squared one-step prediction error over all
+            transitions and state dimensions. Raises RuntimeError if the model has not
+            been fitted.
+        """
+        predictions = self.predict(states, inputs)
+        errors = predictions - np.asarray(next_states, dtype=np.float64)
+        return {"mse": float(np.mean(errors**2))}
+
     def is_fitted(self) -> bool:
         """Say whether `fit` has been called.
 
