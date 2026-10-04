@@ -52,6 +52,25 @@ class Planner(ABC):
             [0, action_space_size). The first entry is the action to take now.
         """
 
+    def hyperparameters(self) -> dict[str, str | int | float | bool | None | list[float]]:
+        """Report the settings of the planner that affect performance, as JSON-safe values.
+
+        Subclasses with further settings extend the returned dict.
+
+        Args:
+            None.
+
+        Returns:
+            A dict with "type" (the class name), "horizon", "action_space_size" and
+            "target_state" (as a list of floats).
+        """
+        return {
+            "type": type(self).__name__,
+            "horizon": self.horizon,
+            "action_space_size": self.action_space_size,
+            "target_state": [float(value) for value in self.target_state],
+        }
+
 
 class RandomShootingPlanner(Planner):
     """A planner that samples random action sequences and keeps the cheapest.
