@@ -8,6 +8,7 @@ from buffers.replay_buffer import ListReplayBuffer, ReplayBuffer
 from models.dynamics_model import DynamicsModel, LinearDynamicsModel
 from planners.planner import Planner, RandomShootingPlanner
 from utils.control.action_to_input import action_to_input
+from utils.data.split_train_test import split_train_test
 
 
 class Agent(ABC):
@@ -171,7 +172,9 @@ class ModelBasedMPCAgent(Agent):
     """An agent that learns a dynamics model and plans with it by model predictive control.
 
     Every transition is stored in a replay buffer. Every `retrain_every_k_episodes`
-    episodes the dynamics model is re-fitted from scratch on the whole buffer. Until
+    episodes, if the buffer holds at least `min_buffer_size_for_update` transitions,
+    a random sample of the buffer is split into a train and a test set, the dynamics
+    model is re-fitted from scratch on the train set and scored on the test set. Until
     the first fit the agent acts uniformly at random; afterwards, at each step, the
     planner searches for the lowest-cost action sequence from the current observation
     and the first action of that sequence is taken (re-planning every step).
@@ -181,20 +184,24 @@ class ModelBasedMPCAgent(Agent):
         planner: the optimiser that picks action sequences using the model.
         buffer: the replay buffer holding past transitions.
         retrain_every_k_episodes: how many episodes pass between model fits.
-        seed: the seed of the generator used for random actions before the first fit.
-        random_generator: the seeded generator for those random actions.
+        min_buffer_size_for_update: the fewest buffered transitions for which the model is fitted.
+        test_fraction: the fraction of the sampled transitions held out to evaluate the model.
+        fit_sample_size: how many transitions are sampled from the buffer per fit, or None for all.
+        seed: the seed of the generator used for random actions before the first fit and for sampling.
+        random_generator: the seeded generator for those random actions and sample seeds.
         episodes_seen: the number of episodes ended so far.
-        transitions_since_fit: the number of transitions observed since the last fit.
     """
 
     model: DynamicsModel
     planner: Planner
     buffer: ReplayBuffer
     retrain_every_k_episodes: int
+    min_buffer_size_for_update: int
+    test_fraction: float
+    fit_sample_size: int | None
     seed: int
     random_generator: np.random.Generator
     episodes_seen: int
-    transitions_since_fit: int
 
     def __init__(
         self,
@@ -202,6 +209,9 @@ class ModelBasedMPCAgent(Agent):
         *,
         observation_size: int = 4,
         retrain_every_k_episodes: int = 5,
+        min_buffer_size_for_update: int = 100,
+        test_fraction: float = 0.2,
+        fit_sample_size: int | None = None,
         horizon: int = 10,
         num_samples: int = 1000,
         max_transitions: int = 100_000,
@@ -217,6 +227,11 @@ class ModelBasedMPCAgent(Agent):
             action_space_size: the number of discrete actions available.
             observation_size: the number of dimensions of the observation (the state).
             retrain_every_k_episodes: how many episodes pass between model fits.
+            min_buffer_size_for_update: the fewest buffered transitions for which the model
+                is fitted. Must be at least 2, so the train/test split has a row on each side.
+            test_fraction: the fraction of the sampled transitions held out to evaluate the model.
+            fit_sample_size: how many transitions to sample from the buffer per fit.
+                None samples the whole buffer (shuffled).
             horizon: the planning horizon, used when building the default planner.
             num_samples: the number of sequences per plan, used when building the default planner.
             max_transitions: the buffer capacity, used when building the default buffer.
@@ -228,9 +243,13 @@ class ModelBasedMPCAgent(Agent):
             seed: the seed for random actions and for the default planner.
 
         Returns:
-            None.
+            None. Raises ValueError if `min_buffer_size_for_update` is below 2.
         """
         super().__init__(action_space_size)
+        if min_buffer_size_for_update < 2:
+            raise ValueError(
+                f"min_buffer_size_for_update must be at least 2, got {min_buffer_size_for_update}"
+            )
         if target_state is None:
             target_state = np.zeros(observation_size)
         if model is None:
@@ -249,10 +268,12 @@ class ModelBasedMPCAgent(Agent):
         self.planner = planner
         self.buffer = buffer
         self.retrain_every_k_episodes = retrain_every_k_episodes
+        self.min_buffer_size_for_update = min_buffer_size_for_update
+        self.test_fraction = test_fraction
+        self.fit_sample_size = fit_sample_size
         self.seed = seed
         self.random_generator = np.random.default_rng(seed)
         self.episodes_seen = 0
-        self.transitions_since_fit = 0
         self._latest_diagnostics: dict[str, float] = {}
 
     def select_action(self, observation: np.ndarray) -> int:
@@ -295,14 +316,15 @@ class ModelBasedMPCAgent(Agent):
             None.
         """
         self.buffer.add(observation, action, reward, next_observation, terminated)
-        self.transitions_since_fit += 1
 
     def end_episode(self) -> None:
-        """Count the episode and, every k episodes, re-fit the dynamics model on the buffer.
+        """Count the episode and, every k episodes with enough data, re-fit and evaluate the model.
 
-        Differs from the base class by training the model. Before re-fitting, the
-        previous model (if any) is scored on the transitions collected since the last
-        fit, so the diagnostics show how well it predicted data it had not seen.
+        Differs from the base class by training the model. On a retrain episode where the
+        buffer holds at least `min_buffer_size_for_update` transitions, a random sample of
+        the buffer (seeded from the agent's generator) is split into train and test sets, the
+        model is fitted on the train set and evaluated on the test set. Otherwise the model
+        is left alone.
 
         Args:
             None.
@@ -312,19 +334,21 @@ class ModelBasedMPCAgent(Agent):
         """
         self.episodes_seen += 1
         diagnostics: dict[str, float] = {"buffer_size": float(self.buffer.size())}
-        if self.episodes_seen % self.retrain_every_k_episodes == 0 and self.buffer.size() > 0:
-            arrays = self.buffer.as_arrays()
-            states = arrays["observations"]
-            inputs = action_to_input(arrays["actions"])
-            next_states = arrays["next_observations"]
-            if self.model.is_fitted():
-                newest = min(self.transitions_since_fit, self.buffer.size())
-                predictions = self.model.predict(states[-newest:], inputs[-newest:])
-                errors = predictions - next_states[-newest:]
-                diagnostics["model_one_step_mse_new_data"] = float(np.mean(errors**2))
-            fit_metrics = self.model.fit(states, inputs, next_states)
+        retrain_due = self.episodes_seen % self.retrain_every_k_episodes == 0
+        if retrain_due and self.buffer.size() >= self.min_buffer_size_for_update:
+            sample_size = self.buffer.size() if self.fit_sample_size is None else self.fit_sample_size
+            sample_seed = int(self.random_generator.integers(2**31 - 1))
+            train, test = split_train_test(self.buffer.sample(sample_size, sample_seed), self.test_fraction)
+            fit_metrics = self.model.fit(
+                train["observations"], action_to_input(train["actions"]), train["next_observations"]
+            )
+            test_metrics = self.model.evaluate(
+                test["observations"], action_to_input(test["actions"]), test["next_observations"]
+            )
             diagnostics["model_train_mse"] = float(fit_metrics["train_mse"])
-            self.transitions_since_fit = 0
+            diagnostics["model_test_mse"] = float(test_metrics["mse"])
+            for name, value in self.model.parameters().items():
+                diagnostics[f"model_param_{name}"] = float(value)
         self._latest_diagnostics = diagnostics
 
     def diagnostics(self) -> dict[str, float]:
@@ -337,8 +361,9 @@ class ModelBasedMPCAgent(Agent):
 
         Returns:
             A dict with "buffer_size". When the model was re-fitted at the latest episode
-            end it also has "model_train_mse", and, if there was an earlier fit,
-            "model_one_step_mse_new_data". Empty before the first episode ends.
+            end it also has "model_train_mse", "model_test_mse" (on the held-out part of
+            the sample) and one "model_param_<name>" entry per model parameter. Empty
+            before the first episode ends.
         """
         return dict(self._latest_diagnostics)
 
