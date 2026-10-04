@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from typing import Any
 
 import numpy as np
 import torch
@@ -91,6 +92,20 @@ class Agent(ABC):
             Empty by default.
         """
         return {}
+
+    def hyperparameters(self) -> dict[str, Any]:
+        """Report the settings of the agent that affect learning or performance, as JSON-safe values.
+
+        Subclasses extend the returned dict with their own settings. Values are
+        strings, numbers, booleans, None, lists, or dicts of these (for nested components).
+
+        Args:
+            None.
+
+        Returns:
+            A dict with "type" (the class name) and "action_space_size".
+        """
+        return {"type": type(self).__name__, "action_space_size": self.action_space_size}
 
 
 class RandomAgent(Agent):
