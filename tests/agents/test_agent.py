@@ -425,3 +425,33 @@ def test_random_agent_hyperparameters() -> None:
         "action_space_size": 3,
         "seed": 5,
     }
+
+
+# ReinforceAgent.hyperparameters
+
+
+def test_reinforce_agent_hyperparameters() -> None:
+    agent = ReinforceAgent(
+        action_space_size=3,
+        observation_size=5,
+        hidden_size=16,
+        learning_rate=0.05,
+        discount=0.9,
+        seed=4,
+    )
+    assert agent.hyperparameters() == {
+        "type": "ReinforceAgent",
+        "action_space_size": 3,
+        "observation_size": 5,
+        "hidden_size": 16,
+        "learning_rate": 0.05,
+        "discount": 0.9,
+        "seed": 4,
+    }
+
+
+def test_reinforce_agent_hyperparameters_do_not_change_after_learning() -> None:
+    agent = ReinforceAgent(action_space_size=2, seed=0)
+    before = agent.hyperparameters()
+    play_scripted_episode(agent, EPISODE_REWARDS)
+    assert agent.hyperparameters() == before
