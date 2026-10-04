@@ -194,3 +194,74 @@ def test_linear_model_fit_and_predict_do_not_mutate_inputs() -> None:
     np.testing.assert_array_equal(states, originals[0])
     np.testing.assert_array_equal(inputs, originals[1])
     np.testing.assert_array_equal(next_states, originals[2])
+
+
+# LinearDynamicsModel.parameters
+
+
+def test_linear_model_parameters_before_fit_raises_runtime_error() -> None:
+    with pytest.raises(RuntimeError):
+        LinearDynamicsModel(state_dim=2).parameters()
+
+
+def test_linear_model_parameters_are_flat_named_floats() -> None:
+    parameters = fitted_linear_model().parameters()
+    assert list(parameters) == ["A_0_0", "A_0_1", "A_1_0", "A_1_1", "B_0", "B_1"]
+    assert all(type(value) is float for value in parameters.values())
+
+
+def test_linear_model_parameters_match_fitted_a_and_b() -> None:
+    parameters = fitted_linear_model().parameters()
+    for row in range(2):
+        for column in range(2):
+            assert parameters[f"A_{row}_{column}"] == pytest.approx(TRUE_A[row, column], abs=TOLERANCE)
+        assert parameters[f"B_{row}"] == pytest.approx(TRUE_B[row], abs=TOLERANCE)
+
+
+# LinearDynamicsModel.evaluate
+
+
+def test_linear_model_evaluate_before_fit_raises_runtime_error() -> None:
+    with pytest.raises(RuntimeError):
+        LinearDynamicsModel(state_dim=2).evaluate(*exact_transitions(TRUE_A, TRUE_B))
+
+
+def test_linear_model_evaluate_on_exact_data_gives_mse_near_zero() -> None:
+    metrics = fitted_linear_model().evaluate(*exact_transitions(TRUE_A, TRUE_B))
+    assert set(metrics) == {"mse"}
+    assert metrics["mse"] == pytest.approx(0.0, abs=1e-12)
+
+
+def test_linear_model_evaluate_matches_hand_computed_mse() -> None:
+    states, inputs, next_states = exact_transitions(TRUE_A, TRUE_B)
+    # Error of 1.0 in the first state dimension only: squared errors are 1 and 0, mean 0.5.
+    shifted_next_states = next_states + np.array([1.0, 0.0])
+    metrics = fitted_linear_model().evaluate(states, inputs, shifted_next_states)
+    assert metrics["mse"] == pytest.approx(0.5, abs=1e-6)
+
+
+def test_linear_model_evaluate_uses_the_given_data_not_the_training_data() -> None:
+    states, inputs, next_states = exact_transitions(TRUE_A, TRUE_B)
+    metrics = fitted_linear_model().evaluate(states[:3], inputs[:3], next_states[:3] + 0.5)
+    assert metrics["mse"] == pytest.approx(0.25, abs=1e-6)
+
+
+def test_linear_model_evaluate_does_not_mutate_inputs_or_the_fit() -> None:
+    model = fitted_linear_model()
+    states, inputs, next_states = exact_transitions(TRUE_A, TRUE_B)
+    originals = [array.copy() for array in (states, inputs, next_states)]
+    parameters_before = model.parameters()
+    model.evaluate(states, inputs, next_states)
+    for array, original in zip((states, inputs, next_states), originals):
+        np.testing.assert_array_equal(array, original)
+    assert model.parameters() == parameters_before
+
+
+# LinearDynamicsModel.hyperparameters
+
+
+def test_linear_model_hyperparameters() -> None:
+    assert LinearDynamicsModel(state_dim=4).hyperparameters() == {
+        "type": "LinearDynamicsModel",
+        "state_dim": 4,
+    }
