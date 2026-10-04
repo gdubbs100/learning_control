@@ -77,6 +77,34 @@ class ReplayBuffer(ABC):
             (shape (size,)).
         """
 
+    @abstractmethod
+    def sample(self, num_samples: int, seed: int) -> dict[str, np.ndarray]:
+        """Draw a random subset of the stored transitions, without replacement.
+
+        Args:
+            num_samples: how many transitions to draw. Must be at least 1. If it
+                exceeds the buffer size, every stored transition is returned.
+            seed: the seed for the random draw, so the same seed gives the same sample.
+
+        Returns:
+            A dict with the same keys and layout as `as_arrays`, holding the drawn
+            transitions in random order. Raises ValueError if the buffer is empty
+            or `num_samples` is below 1.
+        """
+
+    def hyperparameters(self) -> dict[str, str | int | float | bool | None]:
+        """Report the settings of the buffer that affect learning, as JSON-safe values.
+
+        Subclasses with further settings extend the returned dict.
+
+        Args:
+            None.
+
+        Returns:
+            A dict with "type" (the class name) and "max_transitions".
+        """
+        return {"type": type(self).__name__, "max_transitions": self.max_transitions}
+
 
 class ListReplayBuffer(ReplayBuffer):
     """A replay buffer that keeps its transitions in bounded deques, dropping the oldest when full.
