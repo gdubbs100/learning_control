@@ -174,3 +174,28 @@ class ListReplayBuffer(ReplayBuffer):
             "next_observations": np.array(self.next_observations),
             "terminated": np.array(self.terminated, dtype=np.bool_),
         }
+
+    def sample(self, num_samples: int, seed: int) -> dict[str, np.ndarray]:
+        """Draw a random subset of the stored transitions, without replacement.
+
+        Differs from the base class by implementing the draw with a numpy generator
+        seeded with `seed`.
+
+        Args:
+            num_samples: how many transitions to draw. Must be at least 1. If it
+                exceeds the buffer size, every stored transition is returned.
+            seed: the seed for the random draw.
+
+        Returns:
+            A dict with the same keys and layout as `as_arrays`, holding the drawn
+            transitions in random order. Raises ValueError if the buffer is empty
+            or `num_samples` is below 1.
+        """
+        if num_samples < 1:
+            raise ValueError(f"num_samples must be at least 1, got {num_samples}")
+        if self.size() == 0:
+            raise ValueError("cannot sample from an empty buffer")
+        chosen_indices = np.random.default_rng(seed).choice(
+            self.size(), size=min(num_samples, self.size()), replace=False
+        )
+        return {key: array[chosen_indices] for key, array in self.as_arrays().items()}
