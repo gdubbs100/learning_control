@@ -414,3 +414,14 @@ def test_reinforce_agent_does_not_mutate_observation() -> None:
     agent.observe_transition(observation, 1, -1.0, observation, False)
     agent.end_episode()
     np.testing.assert_array_equal(observation, original_observation)
+
+
+# RandomAgent.hyperparameters
+
+
+def test_random_agent_hyperparameters() -> None:
+    assert RandomAgent(action_space_size=3, seed=5).hyperparameters() == {
+        "type": "RandomAgent",
+        "action_space_size": 3,
+        "seed": 5,
+    }
