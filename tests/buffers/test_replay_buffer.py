@@ -184,3 +184,81 @@ def test_list_replay_buffer_size_never_exceeds_max_transitions() -> None:
 def test_list_replay_buffer_rejects_max_transitions_below_one(invalid_max_transitions: int) -> None:
     with pytest.raises(ValueError):
         ListReplayBuffer(max_transitions=invalid_max_transitions)
+
+
+# ListReplayBuffer.sample
+
+
+def buffer_with_actions(actions: list[int]) -> ListReplayBuffer:
+    buffer = ListReplayBuffer(max_transitions=100)
+    add_transitions_with_actions(buffer, actions)
+    return buffer
+
+
+def test_list_replay_buffer_sample_has_as_arrays_keys_and_requested_size() -> None:
+    sample = buffer_with_actions(list(range(20))).sample(num_samples=5, seed=0)
+    assert set(sample) == {"observations", "actions", "rewards", "next_observations", "terminated"}
+    assert sample["observations"].shape == (5, 4)
+    assert sample["next_observations"].shape == (5, 4)
+    assert sample["actions"].shape == (5,)
+    assert sample["rewards"].shape == (5,)
+    assert sample["terminated"].shape == (5,)
+
+
+def test_list_replay_buffer_sample_keeps_rows_aligned_across_keys() -> None:
+    sample = buffer_with_actions(list(range(20))).sample(num_samples=8, seed=3)
+    actions = sample["actions"]
+    np.testing.assert_array_equal(sample["observations"][:, 0], actions.astype(float))
+    np.testing.assert_array_equal(sample["rewards"], -actions.astype(float))
+    np.testing.assert_array_equal(sample["next_observations"][:, 0], actions + 0.5)
+
+
+def test_list_replay_buffer_sample_is_without_replacement() -> None:
+    sample = buffer_with_actions(list(range(20))).sample(num_samples=20, seed=1)
+    assert sorted(sample["actions"].tolist()) == list(range(20))
+
+
+def test_list_replay_buffer_sample_is_capped_at_buffer_size() -> None:
+    sample = buffer_with_actions([0, 1, 2]).sample(num_samples=10, seed=0)
+    assert sorted(sample["actions"].tolist()) == [0, 1, 2]
+
+
+def test_list_replay_buffer_sample_is_deterministic_for_a_seed() -> None:
+    buffer = buffer_with_actions(list(range(20)))
+    first = buffer.sample(num_samples=5, seed=7)
+    second = buffer.sample(num_samples=5, seed=7)
+    for key in first:
+        np.testing.assert_array_equal(first[key], second[key])
+
+
+def test_list_replay_buffer_sample_varies_with_seed() -> None:
+    buffer = buffer_with_actions(list(range(20)))
+    samples = {tuple(buffer.sample(num_samples=5, seed=seed)["actions"].tolist()) for seed in range(10)}
+    assert len(samples) > 1
+
+
+def test_list_replay_buffer_sample_does_not_change_the_buffer() -> None:
+    buffer = buffer_with_actions(list(range(5)))
+    buffer.sample(num_samples=3, seed=0)
+    assert buffer.size() == 5
+    np.testing.assert_array_equal(buffer.as_arrays()["actions"], [0, 1, 2, 3, 4])
+
+
+def test_list_replay_buffer_sample_from_empty_buffer_raises() -> None:
+    with pytest.raises(ValueError):
+        ListReplayBuffer(max_transitions=10).sample(num_samples=1, seed=0)
+
+
+def test_list_replay_buffer_sample_of_fewer_than_one_raises() -> None:
+    with pytest.raises(ValueError):
+        buffer_with_actions([0, 1]).sample(num_samples=0, seed=0)
+
+
+# ListReplayBuffer.hyperparameters
+
+
+def test_list_replay_buffer_hyperparameters() -> None:
+    assert ListReplayBuffer(max_transitions=123).hyperparameters() == {
+        "type": "ListReplayBuffer",
+        "max_transitions": 123,
+    }
