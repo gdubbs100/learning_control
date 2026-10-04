@@ -196,8 +196,11 @@ def feed_exact_episode(
 
 
 def make_mpc_agent(**overrides) -> ModelBasedMPCAgent:
-    """A ModelBasedMPCAgent with a short horizon and few samples, retraining every episode by default."""
-    settings = dict(retrain_every_k_episodes=1, horizon=1, num_samples=50, seed=0)
+    """A ModelBasedMPCAgent with a short horizon and few samples, retraining every episode by default
+    and allowing fits on small buffers."""
+    settings = dict(
+        retrain_every_k_episodes=1, horizon=1, num_samples=50, seed=0, min_buffer_size_for_update=2
+    )
     settings.update(overrides)
     return ModelBasedMPCAgent(action_space_size=2, **settings)
 
@@ -254,27 +257,156 @@ def test_mpc_agent_diagnostics_without_fit_only_report_buffer_size() -> None:
     assert agent.diagnostics() == {"buffer_size": 15.0}
 
 
-def test_mpc_agent_first_fit_diagnostics_have_train_mse_but_no_one_step_mse() -> None:
+def test_mpc_agent_fit_diagnostics_have_train_and_test_mse_and_parameters() -> None:
     agent = make_mpc_agent()
     feed_exact_episode(agent, MPC_TRUE_A, MPC_TRUE_B, first_index=0, count=30)
     diagnostics = agent.diagnostics()
-    assert set(diagnostics) == {"buffer_size", "model_train_mse"}
+    assert set(diagnostics) == {"buffer_size", "model_train_mse", "model_test_mse"} | MPC_PARAMETER_KEYS
     assert diagnostics["buffer_size"] == 30.0
     assert diagnostics["model_train_mse"] < 1e-12
+    assert diagnostics["model_test_mse"] < 1e-12
 
 
-def test_mpc_agent_one_step_mse_is_near_zero_when_dynamics_are_unchanged() -> None:
+MPC_PARAMETER_KEYS = {f"model_param_A_{row}_{column}" for row in range(4) for column in range(4)} | {
+    f"model_param_B_{row}" for row in range(4)
+}
+
+
+def test_mpc_agent_fit_diagnostics_report_the_fitted_parameters() -> None:
     agent = make_mpc_agent()
     feed_exact_episode(agent, MPC_TRUE_A, MPC_TRUE_B, first_index=0, count=30)
-    feed_exact_episode(agent, MPC_TRUE_A, MPC_TRUE_B, first_index=30, count=30)
-    assert agent.diagnostics()["model_one_step_mse_new_data"] < 1e-12
+    diagnostics = agent.diagnostics()
+    assert diagnostics["model_param_A_0_0"] == pytest.approx(0.9, abs=1e-6)
+    assert diagnostics["model_param_A_0_1"] == pytest.approx(0.0, abs=1e-6)
+    assert diagnostics["model_param_B_1"] == pytest.approx(0.1, abs=1e-6)
+    assert diagnostics["model_param_B_3"] == pytest.approx(0.2, abs=1e-6)
 
 
-def test_mpc_agent_one_step_mse_is_large_when_dynamics_change() -> None:
+def test_mpc_agent_diagnostics_have_no_model_entries_on_an_episode_without_a_fit() -> None:
+    agent = make_mpc_agent(retrain_every_k_episodes=2)
+    feed_exact_episode(agent, MPC_TRUE_A, MPC_TRUE_B, first_index=0, count=15)
+    feed_exact_episode(agent, MPC_TRUE_A, MPC_TRUE_B, first_index=15, count=15)
+    assert "model_test_mse" in agent.diagnostics()
+    feed_exact_episode(agent, MPC_TRUE_A, MPC_TRUE_B, first_index=30, count=15)
+    assert agent.diagnostics() == {"buffer_size": 45.0}
+
+
+class RecordingModel(LinearDynamicsModel):
+    """A linear model that records the states it is fitted on and evaluated on."""
+
+    def __init__(self, state_dim: int) -> None:
+        super().__init__(state_dim)
+        self.fit_states: list[np.ndarray] = []
+        self.evaluate_states: list[np.ndarray] = []
+
+    def fit(self, states: np.ndarray, inputs: np.ndarray, next_states: np.ndarray) -> dict[str, float]:
+        self.fit_states.append(states.copy())
+        return super().fit(states, inputs, next_states)
+
+    def evaluate(self, states: np.ndarray, inputs: np.ndarray, next_states: np.ndarray) -> dict[str, float]:
+        self.evaluate_states.append(states.copy())
+        return super().evaluate(states, inputs, next_states)
+
+
+def fit_recording_agent(count: int = 30, **overrides) -> RecordingModel:
+    """Feed one exact episode of `count` transitions to an agent with a RecordingModel; return the model."""
+    model = RecordingModel(state_dim=4)
+    agent = make_mpc_agent(model=model, **overrides)
+    feed_exact_episode(agent, MPC_TRUE_A, MPC_TRUE_B, first_index=0, count=count)
+    return model
+
+
+def row_set(states: np.ndarray) -> set[tuple[float, ...]]:
+    return {tuple(row) for row in states}
+
+
+def test_mpc_agent_default_split_and_sample_settings() -> None:
     agent = make_mpc_agent()
+    assert agent.test_fraction == 0.2
+    assert agent.fit_sample_size is None
+    assert ModelBasedMPCAgent(action_space_size=2).min_buffer_size_for_update == 100
+
+
+def test_mpc_agent_fits_once_and_evaluates_once_per_retrain() -> None:
+    model = fit_recording_agent()
+    assert len(model.fit_states) == 1
+    assert len(model.evaluate_states) == 1
+
+
+def test_mpc_agent_splits_whole_buffer_by_test_fraction_by_default() -> None:
+    model = fit_recording_agent(count=30)
+    assert model.fit_states[0].shape == (24, 4)
+    assert model.evaluate_states[0].shape == (6, 4)
+
+
+def test_mpc_agent_train_and_test_rows_are_disjoint_and_come_from_the_buffer() -> None:
+    model = fit_recording_agent(count=30)
+    train_rows = row_set(model.fit_states[0])
+    test_rows = row_set(model.evaluate_states[0])
+    buffer_rows = {tuple(mpc_state(index)) for index in range(30)}
+    assert train_rows.isdisjoint(test_rows)
+    assert train_rows | test_rows == buffer_rows
+
+
+def test_mpc_agent_test_fraction_sets_the_split_sizes() -> None:
+    model = fit_recording_agent(count=30, test_fraction=0.5)
+    assert model.fit_states[0].shape == (15, 4)
+    assert model.evaluate_states[0].shape == (15, 4)
+
+
+def test_mpc_agent_fit_sample_size_limits_the_rows_used() -> None:
+    model = fit_recording_agent(count=30, fit_sample_size=10)
+    assert model.fit_states[0].shape == (8, 4)
+    assert model.evaluate_states[0].shape == (2, 4)
+    buffer_rows = {tuple(mpc_state(index)) for index in range(30)}
+    assert row_set(model.fit_states[0]) | row_set(model.evaluate_states[0]) <= buffer_rows
+
+
+def test_mpc_agent_fit_sample_size_larger_than_buffer_uses_the_whole_buffer() -> None:
+    model = fit_recording_agent(count=30, fit_sample_size=1000)
+    assert len(model.fit_states[0]) + len(model.evaluate_states[0]) == 30
+
+
+def test_mpc_agent_same_seed_gives_same_train_test_split() -> None:
+    first = fit_recording_agent(count=30, fit_sample_size=10, seed=4)
+    second = fit_recording_agent(count=30, fit_sample_size=10, seed=4)
+    np.testing.assert_array_equal(first.fit_states[0], second.fit_states[0])
+    np.testing.assert_array_equal(first.evaluate_states[0], second.evaluate_states[0])
+
+
+def test_mpc_agent_different_seeds_sample_different_rows() -> None:
+    samples = {
+        frozenset(row_set(fit_recording_agent(count=30, fit_sample_size=10, seed=seed).fit_states[0]))
+        for seed in range(5)
+    }
+    assert len(samples) > 1
+
+
+def test_mpc_agent_does_not_fit_below_min_buffer_size_for_update() -> None:
+    agent = make_mpc_agent(min_buffer_size_for_update=100)
     feed_exact_episode(agent, MPC_TRUE_A, MPC_TRUE_B, first_index=0, count=30)
-    feed_exact_episode(agent, 0.5 * np.eye(4), np.array([1.0, 0.0, 0.0, 0.0]), first_index=30, count=30)
-    assert agent.diagnostics()["model_one_step_mse_new_data"] > 1e-3
+    assert agent.model.is_fitted() is False
+    assert agent.diagnostics() == {"buffer_size": 30.0}
+
+
+def test_mpc_agent_fits_at_the_next_retrain_once_the_buffer_reaches_the_minimum() -> None:
+    agent = make_mpc_agent(min_buffer_size_for_update=100)
+    feed_exact_episode(agent, MPC_TRUE_A, MPC_TRUE_B, first_index=0, count=30)
+    feed_exact_episode(agent, MPC_TRUE_A, MPC_TRUE_B, first_index=30, count=70)
+    assert agent.model.is_fitted() is True
+    assert agent.diagnostics()["buffer_size"] == 100.0
+
+
+def test_mpc_agent_acts_randomly_while_below_min_buffer_size_for_update() -> None:
+    agent = make_mpc_agent(min_buffer_size_for_update=100)
+    feed_exact_episode(agent, MPC_TRUE_A, MPC_TRUE_B, first_index=0, count=30)
+    assert set(select_actions(agent, 50)) == {0, 1}
+
+
+@pytest.mark.parametrize("invalid_minimum", [0, 1, -5])
+def test_mpc_agent_rejects_min_buffer_size_for_update_below_two(invalid_minimum: int) -> None:
+    with pytest.raises(ValueError):
+        make_mpc_agent(min_buffer_size_for_update=invalid_minimum)
 
 
 def test_mpc_agent_planned_action_reduces_cart_velocity_with_fitted_model() -> None:
